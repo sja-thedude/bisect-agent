@@ -25,7 +25,7 @@ from .tavily import Tavily
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB_OUT = ROOT / "web" / "out"
-SEEDS_DIR = ROOT / "seeds"
+SEEDS_DIR = ROOT / "seeds" / "runs"
 
 S = settings()
 store = Store(S.db_path)
