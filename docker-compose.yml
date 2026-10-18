@@ -1,0 +1,11 @@
+services:
+  bisect:
+    build: .
+    restart: unless-stopped
+    ports: ["80:8000"]
+    env_file: .env
+    environment:
+      BISECT_DATA_DIR: /var/lib/bisect
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/bisect:/var/lib/bisect
