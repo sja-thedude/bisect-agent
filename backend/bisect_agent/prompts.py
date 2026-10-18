@@ -1,0 +1,102 @@
+"""Prompts for every routed task. Kept together so they are easy to review and tune."""
+
+SELECT_CONTEXT_FILES = """You help an engineer find the code relevant to a bug report in a Python repository.
+Given the bug report and the repository file list, pick the files most likely to contain the
+code that implements the described behaviour, plus at most two existing test files that show
+how the package is imported and tested. Reply with JSON only:
+{"source_files": ["path", ...up to 6], "test_files": ["path", ...up to 2], "package_import": "how the package is imported, e.g. `import foo` or `from foo import bar`"}"""
+
+WRITE_REPRO_TEST = """You are a senior Python engineer writing a regression test that reproduces a bug report.
+
+The test will be run with pytest at many historical commits of the repository during a git bisect,
+inside a sandbox with NO network access. It must therefore:
+- FAIL at the current HEAD because of exactly the behaviour described in the bug report, via a failing assert
+  (not an ImportError, NameError, fixture error or a crash in the test itself).
+- PASS at older commits where the behaviour was correct. Only use public APIs that have existed for a long time;
+  avoid features, keyword arguments or helpers that may be recent. Prefer the most basic entry point that shows the bug.
+- Be deterministic, fast (well under 10 seconds), self-contained, and use only the standard library, pytest and the
+  repository's own package (plus its existing runtime dependencies).
+- Not use network, subprocesses, sleeps, randomness without a seed, or skip/xfail markers.
+- Contain one to three focused test functions, all checking the same symptom. Use clear assert messages that state
+  the expected vs actual behaviour.
+- Not rely on the repository's conftest fixtures (they change over history).
+
+The repository root and its `src/` directory are on PYTHONPATH; the package is NOT pip-installed, so avoid
+importlib.metadata lookups of the package's own version.
+
+Reply with JSON only:
+{"test_code": "<complete python file>", "rationale": "<one paragraph: what the test checks and why it captures the bug>",
+ "symptom": "<one sentence: the exact wrong behaviour the assert detects>"}"""
+
+REPAIR_REPRO_TEST = """You wrote a pytest reproduction test for a bug report, but running it did not give the required result.
+You are shown the test, where it was run, what was required, and pytest's output. Rewrite the test so that it
+satisfies all the original constraints (fail on HEAD via an assert that captures the reported bug; pass on the
+known-good commit; no network; only long-standing public APIs; no conftest fixtures).
+
+If the test errored at the known-good commit because an API did not exist yet, use an older, more basic API.
+If it passed at HEAD, your test did not capture the bug: re-read the report and the source and target the actual symptom.
+
+Reply with JSON only: {"test_code": "...", "rationale": "...", "symptom": "..."}"""
+
+CLASSIFY_VERDICT = """You classify one step of a git bisect. A reproduction test was run with pytest at a commit.
+Decide what this commit tells us about the bug:
+- "bad": the reproduction test FAILED and the failure shows the same wrong behaviour as the reference failure at HEAD
+  (same assertion and essentially the same symptom; exact values may differ slightly).
+- "good": the reproduction test PASSED, i.e. the behaviour was correct at this commit.
+- "skip": the result is inconclusive: an import/collection error, a missing API, a dependency install failure,
+  a timeout, a crash unrelated to the reported symptom, or a failure with a clearly different cause.
+Reply with JSON only: {"verdict": "good"|"bad"|"skip", "reason": "<one short sentence>"}"""
+
+SUMMARISE_DIFF = """Summarise what this git commit changes in one or two plain sentences for a live bisect log.
+Mention the files or functions touched and whether it looks relevant to the bug report. No preamble.
+Reply with JSON only: {"summary": "...", "relevant": true|false}"""
+
+FILTER_CANDIDATES = """git bisect could not isolate a single commit because some commits could not be tested.
+Given the bug report and the candidate commits (subject, files touched, short diff), rank which commit most
+plausibly introduced the bug. Commits touching only tests, docs, CI or formatting are very unlikely.
+Reply with JSON only: {"ranked": ["<sha>", ...], "reason": "<one or two sentences>"}"""
+
+DECIDE_UPSTREAM_RESEARCH = """You are investigating a regression. git bisect identified the first bad commit.
+Decide whether the repository's own history can explain the break, or whether the cause lies in an upstream
+dependency (for example the commit bumps a dependency version, or changes a lock file, and the source code
+changes do not plausibly explain the failure). If upstream research is warranted, list the packages involved.
+Reply with JSON only:
+{"needs_upstream_research": true|false, "reason": "<one or two sentences>",
+ "packages": [{"name": "...", "old_version": "...|null", "new_version": "...|null"}]}"""
+
+PLAN_SEARCH_QUERIES = """Write web search queries to find out why upgrading a Python package broke downstream behaviour.
+Cover: the release notes / changelog for the new version, GitHub issues reporting the symptom, and any CVE or
+security advisory that motivated the change. Be specific: include the package name, versions and the symptom.
+Reply with JSON only: {"queries": [{"purpose": "changelog"|"issues"|"cve"|"other", "query": "..."}, ... 3 to 5]}"""
+
+DIGEST_SEARCH_RESULTS = """You read web search results about an upstream Python package change.
+Extract only facts relevant to explaining the downstream regression: what changed upstream, in which version, why
+(including any CVE id), and any workaround. Cite the URL for each fact. Ignore irrelevant results.
+Reply with JSON only: {"findings": [{"fact": "...", "url": "..."}], "upstream_change": "<one sentence or empty>"}"""
+
+EXPLAIN_CULPRIT = """You are a senior engineer explaining a regression to the maintainers of a Python project.
+You get the bug report, the reproduction test, its output at the first bad commit (failing) and at that commit's
+parent (passing), the full diff of the first bad commit, and possibly upstream research findings.
+
+Explain, in plain language, what the commit changed and why that change produces the reported behaviour. Trace the
+causal chain step by step from the specific lines in the diff to the observed symptom. Quote identifiers and code
+from the diff. If upstream findings are provided, fold them in and cite their URLs. Be honest about uncertainty.
+
+Reply with JSON only:
+{"headline": "<one sentence a busy maintainer can read>",
+ "what_changed": "<two or three sentences>",
+ "causal_chain": ["<step 1: the change in the diff>", "<step 2>", "...", "<final step: the observed symptom>"],
+ "why_tests_missed_it": "<one or two sentences, or empty>",
+ "confidence": "high"|"medium"|"low",
+ "citations": ["<url>", ...]}"""
+
+PROPOSE_FIX = """You fix a regression in a Python project. You get the bug report, the explanation of the culprit commit,
+its diff, the reproduction test, and the CURRENT (HEAD) contents of the files you may need to edit.
+Write the smallest correct fix against HEAD that makes the reproduction test pass without breaking the intent of
+the culprit commit (keep any legitimate improvements it made). If the cause is an upstream dependency, fix the
+code to work with the new version where reasonable; pin or constrain the dependency only as a last resort.
+
+Output a unified diff with `--- a/<path>` and `+++ b/<path>` headers, relative to the repository root, that applies
+cleanly with `git apply` to the HEAD files shown. Include enough unchanged context lines (3) for each hunk.
+Do not modify or add the reproduction test.
+Reply with JSON only: {"diff": "<unified diff>", "rationale": "<two or three sentences>"}"""

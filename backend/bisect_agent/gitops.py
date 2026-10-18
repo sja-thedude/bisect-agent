@@ -194,6 +194,13 @@ class BisectSession:
     def reset(self) -> None:
         self.repo.git("bisect", "reset", check=False)
 
+    def remaining(self) -> int:
+        bad, goods = self._terms()
+        if not bad:
+            return 0
+        out = self.repo.git("rev-list", "--count", bad, *[f"^{g}" for g in goods], "--", *self.pathspec, check=False)
+        return int(out.strip() or 0)
+
     def log(self) -> str:
         return self.repo.git("bisect", "log", check=False)
 
