@@ -115,7 +115,7 @@ class Repo:
     def rev(self, ref: str) -> str:
         if ref.startswith("-"):
             raise GitError(f"bad ref {ref!r}")
-        return self.git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").strip()
+        return self.git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False).strip()
 
     def commit(self, sha: str) -> Commit:
         out = self.git("show", "-s", "--format=%H%x00%s%x00%an%x00%cI", sha)

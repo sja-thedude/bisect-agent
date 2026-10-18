@@ -206,11 +206,11 @@ class Agent:
         self.repo = Repo(job_dir, url)
         self.snap_key = repo_slug(url)
         bad_ref = st.input.bad_ref or "HEAD"
-        st.bad_sha = self.repo.rev(bad_ref)
+        st.bad_sha = self._resolve(cache, bad_ref)
         if not st.bad_sha:
             raise ValueError(f"unknown bad ref {bad_ref!r}")
         if st.input.good_ref:
-            st.good_sha = self.repo.rev(st.input.good_ref)
+            st.good_sha = self._resolve(cache, st.input.good_ref)
             if not st.good_sha:
                 raise ValueError(f"unknown good ref {st.input.good_ref!r}")
             if not self.repo.is_ancestor(st.good_sha, st.bad_sha):
@@ -221,13 +221,27 @@ class Agent:
         st.range_size = self.repo.count_between(st.good_sha, st.bad_sha)
         self.log(f"Range: {st.good_sha[:10]}..{st.bad_sha[:10]} ({st.range_size} commits)")
 
+    def _resolve(self, cache: Repo, ref: str) -> str:
+        """Resolve a ref; refs that are not branches or tags (e.g. pull/598/head, an unreachable
+        sha) are fetched on demand into the cache and the job clone."""
+        sha = self.repo.rev(ref)
+        if sha:
+            return sha
+        if not re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", ref) or ref.startswith("-"):
+            return ""
+        local = f"refs/bisect-fetched/{re.sub(r'[^A-Za-z0-9._-]', '_', ref)}"
+        with _repo_lock(cache.url):
+            cache.git("fetch", "--quiet", "origin", f"+{ref}:{local}", check=False, timeout=300)
+        self.repo.git("fetch", "--quiet", str(cache.path), f"+{local}:{local}", check=False, timeout=300)
+        return self.repo.rev(local)
+
     # ------------------------------------------------------------ sandbox
     def _deps_key(self, snap: Path) -> tuple[str, bool]:
-        reqs = self.sandbox.requirements_for(snap)
-        cache_key = "\n".join(sorted(reqs))
+        reqs, cons = self.sandbox.requirements_for(snap)
+        cache_key = "\n".join(sorted(reqs)) + "|" + "\n".join(sorted(cons))
         if cache_key in self._deps_cache:
             return self._deps_cache[cache_key], True
-        key, ok, log = self.sandbox.install(reqs)
+        key, ok, log = self.sandbox.install(reqs, cons)
         if ok:
             self._deps_cache[cache_key] = key
         else:

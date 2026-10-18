@@ -60,6 +60,40 @@ def from_requirement_files():
     return out
 
 
+def from_lock_files():
+    """Exact versions from a lock file become pip constraints, so each commit is tested
+    with the dependency versions it actually shipped with (critical for dependency-bump bisects)."""
+    import tomllib
+
+    pins = {}
+    for name in ("poetry.lock", "pdm.lock", "uv.lock"):
+        path = os.path.join(ROOT, name)
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+        except (tomllib.TOMLDecodeError, OSError):
+            continue
+        for pkg in data.get("package", []):
+            if pkg.get("name") and pkg.get("version") and not pkg.get("source", {}).get("type") in ("git", "directory", "url", "file"):
+                pins.setdefault(re.sub(r"[-_.]+", "-", pkg["name"]).lower(), pkg["version"])
+        break
+    lock = os.path.join(ROOT, "Pipfile.lock")
+    if not pins and os.path.exists(lock):
+        try:
+            data = json.load(open(lock))
+            for section in ("default", "develop"):
+                for name, meta in (data.get(section) or {}).items():
+                    v = str(meta.get("version", ""))
+                    if v.startswith("=="):
+                        pins.setdefault(re.sub(r"[-_.]+", "-", name).lower(), v[2:])
+        except (ValueError, OSError):
+            pass
+    pins.pop("pytest", None)
+    return [f"{n}=={v}" for n, v in sorted(pins.items())]
+
+
 def resolve(pairs):
     env = default_environment()
     result, names = [], set()
@@ -92,7 +126,10 @@ def main():
     if files:
         pairs += files
         source += "+requirements"
-    print(json.dumps({"source": source, "requirements": resolve(pairs)}))
+    constraints = from_lock_files()
+    if constraints:
+        source += "+lock"
+    print(json.dumps({"source": source, "requirements": resolve(pairs), "constraints": constraints}))
 
 
 if __name__ == "__main__":
