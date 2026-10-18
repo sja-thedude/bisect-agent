@@ -32,6 +32,8 @@ from pathlib import Path
 from .config import Settings
 
 RUNNER_UID = 10001
+SANDBOX_DIR = Path(__file__).resolve().parents[2] / "sandbox"
+SUPPORTED_PYTHONS = ("3.8", "3.9", "3.10", "3.11", "3.12", "3.13")
 JUNIT_BEGIN = "@@BISECT_JUNIT_BEGIN@@"
 JUNIT_END = "@@BISECT_JUNIT_END@@"
 
@@ -70,9 +72,11 @@ def _docker(*args: str, timeout: float | None = None, input: str | None = None) 
 
 
 class Sandbox:
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, python: str | None = None):
         self.s = settings
         self.cfg = settings.sandbox
+        self.image = self.cfg.image if not python else f"{self.cfg.image.rsplit(':', 1)[0]}:py{python}"
+        self.python = python or self.cfg.image.rsplit(":py", 1)[-1]
         self.s.snapshots_dir.mkdir(parents=True, exist_ok=True)
         self._deps_locks: dict[str, threading.Lock] = {}
         self._deps_guard = threading.Lock()
@@ -84,22 +88,27 @@ class Sandbox:
             return
         if _docker("info", "--format", "{{.ServerVersion}}", timeout=30).returncode != 0:
             raise SandboxError("Docker daemon is not reachable")
-        if _docker("image", "inspect", self.cfg.image, timeout=30).returncode != 0:
-            raise SandboxError(f"sandbox image {self.cfg.image} missing; run `make sandbox`")
+        if _docker("image", "inspect", self.image, timeout=30).returncode != 0:
+            build = subprocess.run(
+                ["docker", "build", "-q", "-t", self.image, "--build-arg", f"PY={self.python}", str(SANDBOX_DIR)],
+                capture_output=True, text=True, timeout=900,
+            )
+            if build.returncode != 0:
+                raise SandboxError(f"could not build sandbox image {self.image}: {build.stderr[-500:]}")
         _docker("volume", "create", self.cfg.deps_volume, timeout=30)
         # A fresh named volume is root-owned; hand it to the unprivileged runner once.
         _docker("run", "--rm", "--network", "none", "-u", "0", "-v", f"{self.cfg.deps_volume}:/deps",
-                self.cfg.image, "chown", str(RUNNER_UID), "/deps", timeout=60)
+                self.image, "chown", str(RUNNER_UID), "/deps", timeout=60)
         self._ready = True
 
     # -------------------------------------------------------------- snapshots
-    def snapshot(self, repo: Path, sha: str) -> Path:
+    def snapshot(self, repo: Path, sha: str, key: str | None = None) -> Path:
         """Materialise a commit as plain files (no .git) for a read-only mount.
 
         Uses a throwaway index + checkout-index rather than ``git archive`` so that
         ``export-ignore`` attributes cannot hide the test suite.
         """
-        dest = self.s.snapshots_dir / repo.name / sha
+        dest = self.s.snapshots_dir / (key or repo.name) / sha
         if (dest / ".bisect-complete").exists():
             return dest
         tmp = dest.with_name(sha + ".tmp-" + uuid.uuid4().hex[:6])
@@ -150,7 +159,7 @@ class Sandbox:
         name = f"bisect-meta-{uuid.uuid4().hex[:10]}"
         args = self._base_run(name, "none") + [
             "-v", f"{snapshot}:/src:ro",
-            self.cfg.image, "sh", "-c", "cp -a /src/. /work/ && python /opt/bisect/deps_spec.py",
+            self.image, "sh", "-c", "cp -a /src/. /work/ && python /opt/bisect/deps_spec.py",
         ]
         code, out, timed_out = self._run_container(args, name, 180)
         for line in reversed(out.strip().splitlines()):
@@ -168,12 +177,12 @@ class Sandbox:
         access is pip and the third-party packages it builds.
         """
         reqs = sorted(set(requirements) | set(extra or []))
-        key = hashlib.sha256(("\n".join(reqs) + self.cfg.image).encode()).hexdigest()[:16]
+        key = hashlib.sha256(("\n".join(reqs) + self.image).encode()).hexdigest()[:16]
         with self._deps_guard:
             lock = self._deps_locks.setdefault(key, threading.Lock())
         with lock:
             probe = _docker("run", "--rm", "--network", "none", "-v", f"{self.cfg.deps_volume}:/deps:ro",
-                            self.cfg.image, "test", "-f", f"/deps/{key}/.ok", timeout=60)
+                            self.image, "test", "-f", f"/deps/{key}/.ok", timeout=60)
             if probe.returncode == 0:
                 return key, True, "cached"
             if not reqs:
@@ -185,7 +194,7 @@ class Sandbox:
             name = f"bisect-install-{uuid.uuid4().hex[:10]}"
             args = self._base_run(name, "bridge") + [
                 "-v", f"{self.cfg.deps_volume}:/deps",
-                self.cfg.image, "sh", "-c", cmd,
+                self.image, "sh", "-c", cmd,
             ]
             code, out, timed_out = self._run_container(args, name, self.s.limits.install_timeout_s)
             ok = code == 0 and not timed_out
@@ -226,7 +235,7 @@ class Sandbox:
             ])
             script = (
                 f"{setup} || exit 3\n"
-                f"timeout -s KILL {timeout_s} python -m pytest -p no:cacheprovider -q -rA "
+                f"timeout -s KILL {timeout_s} python -m pytest -p no:cacheprovider -o addopts= -q -rA "
                 f"--junitxml=/tmp/junit.xml {target_args} > /tmp/out.txt 2>&1\n"
                 "rc=$?\n"
                 "tail -c 20000 /tmp/out.txt\n"
@@ -238,7 +247,7 @@ class Sandbox:
                 "-v", f"{self.cfg.deps_volume}:/deps:ro",
                 "-v", f"{inj_dir}:/inject:ro",
                 "-e", "PYTEST_ADDOPTS=",
-                self.cfg.image, "bash", "-c", script,
+                self.image, "bash", "-c", script,
             ]
             t0 = time.monotonic()
             code, out, timed_out = self._run_container(args, name, timeout_s)
