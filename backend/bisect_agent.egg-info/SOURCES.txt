@@ -1,0 +1,7 @@
+pyproject.toml
+bisect_agent.egg-info/PKG-INFO
+bisect_agent.egg-info/SOURCES.txt
+bisect_agent.egg-info/dependency_links.txt
+bisect_agent.egg-info/entry_points.txt
+bisect_agent.egg-info/requires.txt
+bisect_agent.egg-info/top_level.txt

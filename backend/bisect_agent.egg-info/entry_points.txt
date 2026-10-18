@@ -1,0 +1,2 @@
+[console_scripts]
+bisect-agent = bisect_agent.cli:main
