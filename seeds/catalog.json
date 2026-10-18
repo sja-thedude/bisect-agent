@@ -1,0 +1,55 @@
+[
+  {
+    "id": "seed-sqlparse-826",
+    "title": "sqlparse: split() stops splitting BEGIN TRANSACTION blocks",
+    "repo_url": "https://github.com/andialbrecht/sqlparse",
+    "issue_url": "https://github.com/andialbrecht/sqlparse/issues/826",
+    "bug_report": "After upgrading sqlparse, sqlparse.split() no longer splits a script wrapped in BEGIN TRANSACTION; ... END TRANSACTION; into separate statements. A script with BEGIN TRANSACTION, a DELETE, an INSERT and END TRANSACTION comes back as a single statement instead of four, which breaks our migration runner.",
+    "good_ref": "0.5.3",
+    "bad_ref": "acd8e5817b5be5f9b9a7b159c1bacc45179f4e44",
+    "expected": "1a3bfbd50b82c05d9adcc51bacba059671dc1bc7",
+    "fix_commit": "5ca50a2ee9b39e9efeea33e01f132d628144fb69",
+    "python": "3.11",
+    "handwritten_test": "import sqlparse\n\n\ndef test_split_transaction_block():\n    sql = 'BEGIN TRANSACTION;\\nDELETE FROM a USING b WHERE a.id = b.id;\\nINSERT INTO a SELECT * FROM b;\\nEND TRANSACTION;'\n    assert len(sqlparse.split(sql)) == 4\n"
+  },
+  {
+    "id": "seed-pathspec-62",
+    "title": "pathspec: the gitignore pattern * stops matching files in subdirectories",
+    "repo_url": "https://github.com/cpburnz/python-pathspec",
+    "issue_url": "https://github.com/cpburnz/python-pathspec/issues/62",
+    "bug_report": "Since upgrading pathspec, the gitignore pattern '*' no longer matches files inside subdirectories such as 'anydir/file.txt'. A spec meant to match everything except product_dir/ (lines '*' and '!product_dir/') now matches nothing at all, so tools that rely on it (like black's excludes) behave wrongly.",
+    "good_ref": "v0.9.0",
+    "bad_ref": "0f5e50bdd90c0267474ad3d815c7b7bbf5de99f6",
+    "expected": "9eb2908bbaecc354dbb62595cca2fd4c6219fd2d",
+    "fix_commit": "4608cee86e989b0388dec41ddf02603094aaf593",
+    "python": "3.11",
+    "handwritten_test": "import pathspec\n\n\ndef test_star_matches_subdirectories():\n    spec = pathspec.PathSpec.from_lines('gitwildmatch', ['*', '!product_dir/'])\n    assert spec.match_file('anydir/file.txt') is True\n    assert spec.match_file('product_dir/file.txt') is False\n"
+  },
+  {
+    "id": "seed-sqlmetadata-597",
+    "title": "sql-metadata: CREATE TABLE IF NOT EXISTS reports the wrong table (dependency bump)",
+    "repo_url": "https://github.com/macbre/sql-metadata",
+    "issue_url": "https://github.com/macbre/sql-metadata/issues/597",
+    "bug_report": "Parser(\"CREATE TABLE IF NOT EXISTS foo (bar INT NULL);\").tables used to return ['foo']. Now it returns ['IF NOT EXISTS'], so our lineage tool records a table literally called IF NOT EXISTS. Nothing in our code changed.",
+    "good_ref": "v2.17.0",
+    "bad_ref": "f1919cc24a7e5fcf0823dc5ffcd9f15ccb810225",
+    "expected": "fa8eb1533ce614ce133ddda2551bb6f7ffa131f1",
+    "fix_commit": "1ec9e185ec9bcc42570e227c5934ffc052433820",
+    "python": "3.11",
+    "dependency_bump": true,
+    "handwritten_test": "from sql_metadata import Parser\n\n\ndef test_create_table_if_not_exists():\n    assert Parser('CREATE TABLE IF NOT EXISTS foo (bar INT NULL);').tables == ['foo']\n"
+  },
+  {
+    "id": "seed-markdown-1358",
+    "title": "Python-Markdown: backslashes in raw HTML attributes get mangled",
+    "repo_url": "https://github.com/Python-Markdown/markdown",
+    "issue_url": "https://github.com/Python-Markdown/markdown/issues/1358",
+    "bug_report": "After upgrading Markdown, an inline raw HTML tag like <img src=\"..\\..\\foo.png\"> comes out of markdown.markdown() as src=\"..\\46.oo.png\" - backslashes inside HTML attributes get corrupted into numbers.",
+    "good_ref": "3.3.7",
+    "bad_ref": "93054dd9f7e6e2f555537873a3ec76d99e82326a",
+    "expected": "c0f6e5a31ea8e7fe98910a0523144c2a96fa9bf1",
+    "fix_commit": "d60c16f712e5caf806e3c0ed40eac385a9d2e18a",
+    "python": "3.11",
+    "handwritten_test": "import markdown\n\n\ndef test_backslashes_in_raw_html_attribute():\n    out = markdown.markdown('<img src=\"..\\\\..\\\\foo.png\">')\n    assert out == '<p><img src=\"..\\\\..\\\\foo.png\"></p>'\n"
+  }
+]

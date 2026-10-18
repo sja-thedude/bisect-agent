@@ -23,9 +23,9 @@ def test_sandbox_runs_and_isolates(fixture_repo, test_settings):
     sb.ensure_ready()
     head = fixture_repo.rev("main")
     snap = sb.snapshot(fixture_repo.path, head)
-    reqs = sb.requirements_for(snap)
-    assert reqs == ["six==1.16.0"]
-    key, ok, log = sb.install(reqs)
+    reqs, cons = sb.requirements_for(snap)
+    assert reqs == ["six==1.16.0"] and cons == []
+    key, ok, log = sb.install(reqs, cons)
     assert ok, log
     probe = '''
 import socket, six, os
@@ -69,7 +69,7 @@ def test_bisect_finds_culprit(fixture_repo, test_settings):
     while not status.done:
         sha = status.next_sha
         snap = sb.snapshot(fixture_repo.path, sha)
-        key, ok, _ = sb.install(sb.requirements_for(snap))
+        key, ok, _ = sb.install(*sb.requirements_for(snap))
         run = sb.run_pytest(snap, sha, key, inject={"tests/test_repro.py": REPRO}, targets=["tests/test_repro.py"])
         status = session.mark(sha, verdict(run))
         steps += 1

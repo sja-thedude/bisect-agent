@@ -155,7 +155,8 @@ class Sandbox:
             out = (e.stdout or b"").decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
             return None, out, True
 
-    def requirements_for(self, snapshot: Path) -> list[str]:
+    def requirements_for(self, snapshot: Path) -> tuple[list[str], list[str]]:
+        """(requirements, lock-file constraints) for a snapshot, read with no network."""
         name = f"bisect-meta-{uuid.uuid4().hex[:10]}"
         args = self._base_run(name, "none") + [
             "-v", f"{snapshot}:/src:ro",
@@ -165,19 +166,21 @@ class Sandbox:
         for line in reversed(out.strip().splitlines()):
             if line.startswith("{"):
                 try:
-                    return json.loads(line)["requirements"]
+                    data = json.loads(line)
+                    return data["requirements"], data.get("constraints", [])
                 except (ValueError, KeyError):
                     break
-        return []
+        return [], []
 
-    def install(self, requirements: list[str], extra: list[str] | None = None) -> tuple[str, bool, str]:
+    def install(self, requirements: list[str], constraints: list[str] | None = None) -> tuple[str, bool, str]:
         """Install requirement strings into /deps/<key>. Returns (key, ok, log tail).
 
         The repository is NOT mounted here, so the only code that runs with network
         access is pip and the third-party packages it builds.
         """
-        reqs = sorted(set(requirements) | set(extra or []))
-        key = hashlib.sha256(("\n".join(reqs) + self.image).encode()).hexdigest()[:16]
+        reqs = sorted(set(requirements))
+        cons = sorted(set(constraints or []))
+        key = hashlib.sha256(("\n".join(reqs) + "|" + "\n".join(cons) + self.image).encode()).hexdigest()[:16]
         with self._deps_guard:
             lock = self._deps_locks.setdefault(key, threading.Lock())
         with lock:
@@ -189,7 +192,9 @@ class Sandbox:
                 cmd = f"mkdir -p /deps/{key} && touch /deps/{key}/.ok"
             else:
                 quoted = " ".join("'" + r.replace("'", "") + "'" for r in reqs)
-                cmd = (f"rm -rf /deps/{key} && pip install --quiet --no-input --target /deps/{key} {quoted} "
+                cons_file = "\n".join(c.replace("'", "") for c in cons)
+                cmd = (f"printf '%s\\n' '{cons_file}' > /tmp/constraints.txt && rm -rf /deps/{key} && "
+                       f"pip install --quiet --no-input --target /deps/{key} -c /tmp/constraints.txt {quoted} "
                        f"&& touch /deps/{key}/.ok")
             name = f"bisect-install-{uuid.uuid4().hex[:10]}"
             args = self._base_run(name, "bridge") + [
