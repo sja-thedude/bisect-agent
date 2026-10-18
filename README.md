@@ -14,6 +14,21 @@ All inference runs on **Nebius Token Factory** using **NVIDIA Nemotron 3** model
 
 ---
 
+## Project status
+
+| Area | State |
+|---|---|
+| Docker sandbox (no network, read-only source, hard timeouts) | ✅ done, covered by tests |
+| `git bisect` driver + speculative parallel midpoints | ✅ done, covered by tests |
+| Sandbox-only bisect of all four seeds (no AI) | ✅ all four find the expected culprit |
+| Model router, Token Factory client, call logging | ✅ done; offline end-to-end test passes |
+| Agent loop: repro test, confirm, bisect, explain, fix, verify | ✅ done; offline end-to-end test passes |
+| Tavily upstream-research branch | ✅ built; awaiting a live run on the sql-metadata seed |
+| Web UI: live log, timeline, report card, permalinks, replay | ✅ done |
+| Live runs with real Nemotron on the seeds | ⏳ needs API keys |
+| Hosted demo on a Nebius Compute VM | ⏳ pending |
+| Demo video, Devpost write-up, feedback forms | ⏳ pending |
+
 ## What it does
 
 ```
@@ -192,6 +207,31 @@ docker compose up -d --build     # serves on port 80
 
 `/var/lib/bisect` must be mounted at the same path inside and outside the container, because snapshots
 are bind-mounted into sandbox containers by host path. Seeded runs in `seeds/runs/` load on startup.
+
+## Development workflow
+
+All work happens on short-lived branches cut from `dev` and merged back with `--no-ff`, so every
+feature stays visible as its own unit in the history:
+
+| Branch | What it added |
+|---|---|
+| `chore/licence-and-friction-log` | MIT licence, `.gitignore`, friction log |
+| `feat/sandbox-and-bisect-driver` | Docker sandbox and `git bisect` driver, proven on a fixture repo |
+| `feat/agent-router-token-factory` | Agent loop, Nemotron router, Token Factory client, Tavily branch, API |
+| `feat/lockfile-deps-and-seeds` | Lock-file pinned dependencies, on-demand ref fetching, seed catalog |
+| `feat/web-ui-and-deploy` | Web UI, Dockerfile, compose, README |
+| `docs/readme-updates` | Project status and this workflow section |
+
+```bash
+git checkout dev && git pull
+git checkout -b feat/<name>        # or fix/<name>, docs/<name>, chore/<name>
+# ...commit...
+git checkout dev && git merge --no-ff feat/<name>
+make test                          # keep dev green before pushing
+git push origin dev feat/<name>
+```
+
+`dev` is the integration branch. `main` is updated from `dev` for the submission.
 
 ## Repository layout
 
