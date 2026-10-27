@@ -64,7 +64,9 @@ Newest entries at the bottom. Each entry: date, tool, what happened, what I expe
 
 - One non-streamed `propose_fix` call to Ultra took **678 s** end to end for 16.7k output tokens, while comparable calls
   ran at ~300 tokens/s (e.g. 4.1k tokens in 13 s). Most likely two 300 s client read timeouts before a retry succeeded.
-  I can't tell from the client whether the server or the network stalled, and there was no request ID in the response
-  to report. Switching to streaming (`stream: true` + `stream_options.include_usage`) let me detect stalls within 60 s
-  and bound each call. Streaming usage includes `reasoning_tokens` too, which is nice. Suggestion: return an
-  `x-request-id` header and document recommended client timeouts for long reasoning generations.
+  I can't tell from the client whether the server or the network stalled. Responses do carry `x-request-id` and
+  `x-inference-id` headers, but my client wasn't logging them, so I had nothing to report; it records them on every
+  call now. Switching to streaming (`stream: true` + `stream_options.include_usage`) let me detect stalls within 60 s
+  and bound each call, and streamed usage still includes `reasoning_tokens`. Suggestion: document recommended client
+  timeouts and streaming for long reasoning generations, and mention the request-ID headers for support tickets.
+  The rate-limit headers (`x-ratelimit-*`, including the dynamic-scale ones) are a nice touch.
