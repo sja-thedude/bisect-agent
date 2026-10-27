@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CLI = [sys.executable, "-m", "bisect_agent.cli"]
+CLI = [sys.executable, "-u", "-m", "bisect_agent.cli"]
 
 
 def main(ids):

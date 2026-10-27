@@ -42,6 +42,9 @@ def fake_transport(head_init: str):
         elif system == prompts.EXPLAIN_CULPRIT:
             out = {"headline": "split() ignores quotes", "what_changed": "w", "causal_chain": ["a", "b"],
                    "why_tests_missed_it": "", "confidence": "high", "citations": []}
+        elif system == prompts.RESOLVE_REVERT:
+            out = {"edits": [{"path": "csvlite/__init__.py", "find": BAD_IMPL.strip("\n"),
+                              "replace": GOOD_IMPL.strip("\n")}], "rationale": "undo the simplification"}
         elif system == prompts.PROPOSE_FIX:
             out = {"edits": [{"path": "csvlite/__init__.py", "find": BAD_IMPL.strip("\n"),
                               "replace": GOOD_IMPL.strip("\n")}], "rationale": "restore quote-aware splitting"}

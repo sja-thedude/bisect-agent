@@ -587,9 +587,12 @@ class Agent:
         if tree:
             patched = self.sandbox.snapshot(self.repo.path, tree, self.snap_key + "-reverts")
         else:
-            # Later commits changed some of the same files (often version or changelog files).
-            # Revert the culprit's changes to every other file and say which were left alone.
-            skipped = [f.strip() for f in err.removeprefix("conflicts in:").split(",") if f.strip()]
+            conflicted = [f.strip() for f in err.removeprefix("conflicts in:").split(",") if f.strip()]
+            if any(_is_code(f) for f in conflicted) or not err.startswith("conflicts in:"):
+                return self._resolved_counterfactual(sha, conflicted, err)
+            # Only non-code files conflict (version files, changelogs): revert the culprit's
+            # changes to every other file and say which were left alone.
+            skipped = conflicted
             keep = [f for f in self.repo.changed_files(sha) if f not in skipped]
             reverse = self.repo.git("diff", "--binary", sha, f"{sha}^", "--", *keep) if keep else ""
             patched, apply_err = self._apply_patch(reverse, "reverted") if reverse else (None, "nothing left to revert")
@@ -608,7 +611,43 @@ class Agent:
                  f"HEAD minus {sha[:10]} -> pytest {run.status} ({run.duration_s}s).",
                  "info" if status == "confirmed" else "warn")
         return {"status": status, "pytest": run.status, "duration_s": run.duration_s, "partial": bool(skipped),
-                "skipped_files": skipped, "output_tail": run.output_tail[-1500:]}
+                "skipped_files": skipped, "method": "git_revert", "output_tail": run.output_tail[-1500:]}
+
+    def _resolved_counterfactual(self, sha: str, conflicted: list[str], err: str) -> dict:
+        """Later commits rewrote the culprit's lines, so `git revert` conflicts. The reasoning tier
+        writes the revert against today's code instead; the sandbox, not the model, decides the result."""
+        st = self.state
+        self.log(f"Counterfactual: `git revert {sha[:10]}` conflicts with later edits to {', '.join(conflicted) or 'the same lines'}; "
+                 "asking the reasoning tier to resolve the revert against HEAD.")
+        files = [f for f in self.repo.changed_files(sha)
+                 if f.endswith((".py", ".pyx", ".pyi", ".txt", ".toml", ".cfg", ".lock")) and self.repo.file_at(st.bad_sha, f)][:8]
+        head_files = "\n\n".join(f"===== {f} (at HEAD) =====\n{self.repo.file_at(st.bad_sha, f, 30000)}" for f in files)
+        user = (f"COMMIT TO REVERT: {sha} {st.first_bad.get('subject', '')}\n\nITS DIFF:\n{self.repo.diff(sha, 30000)}\n\n"
+                f"HEAD FILES:\n{head_files}")
+        feedback = ""
+        for attempt in range(1, 3):
+            try:
+                data = self.router.call("resolve_revert", prompts.RESOLVE_REVERT, user + feedback, json_out=True,
+                                        context=sha).data or {}
+            except InferenceError as e:
+                return {"status": "conflict", "detail": f"{err} ({e})"[:400]}
+            patched, apply_err, patch = self._apply_edits(data.get("edits") or [], f"reverted-{attempt}")
+            if patched:
+                break
+            feedback = f"\n\nYOUR EDITS COULD NOT BE APPLIED:\n{apply_err}\nCopy `find` snippets verbatim from HEAD FILES."
+        else:
+            return {"status": "conflict", "detail": err[:400]}
+        key, ok = self._deps_key(patched)
+        if not ok:
+            return {"status": "install_failed", "detail": "dependencies for the reverted tree failed to install"}
+        run = self.sandbox.run_pytest(patched, st.bad_sha, key, inject={st.repro["path"]: st.repro["code"]},
+                                      targets=[st.repro["path"]], timeout_s=self.test_timeout())
+        status = "confirmed" if run.status == "passed" else "not_confirmed"
+        self.log(f"Counterfactual {'CONFIRMED' if status == 'confirmed' else 'not confirmed'} (revert resolved by the "
+                 f"reasoning tier): HEAD minus {sha[:10]} -> pytest {run.status} ({run.duration_s}s).",
+                 "info" if status == "confirmed" else "warn")
+        return {"status": status, "pytest": run.status, "duration_s": run.duration_s, "method": "model_resolved",
+                "conflicted_files": conflicted, "revert_diff": patch[:20000], "output_tail": run.output_tail[-1500:]}
 
     def _upstream_research(self, decision: dict, dep_changes: list[dict]) -> str:
         st = self.state
@@ -677,7 +716,8 @@ class Agent:
             if not patched:
                 self.log(f"Fix attempt {attempt}: edits did not apply ({err[:160]}).", "warn")
                 attempts.append({"attempt": attempt, "result": "did not apply", "detail": err[:300]})
-                feedback = f"\n\nYOUR PREVIOUS EDITS COULD NOT BE APPLIED:\n{err}\nCopy `find` snippets verbatim from the HEAD files."
+                feedback = (f"\n\nYOUR PREVIOUS EDITS COULD NOT BE APPLIED:\n{err}\nCopy `find` snippets verbatim from the "
+                            "HEAD FILES section (not from the culprit diff: the code may have been reformatted since).")
                 continue
             self.emit("fix", diff=patch, rationale=st.fix["rationale"], attempt=attempt)
             key, ok = self._deps_key(patched)
@@ -721,7 +761,9 @@ class Agent:
             find, replace = str(e.get("find", "")), str(e.get("replace", ""))
             new = _replace_once(text, find, replace)
             if new is None:
-                return None, f"{rel}: `find` snippet does not occur exactly once:\n{find[:400]}", ""
+                near = _closest_region(text, find)
+                hint = f"\nThe closest text actually in the HEAD file is:\n{near}" if near else ""
+                return None, f"{rel}: `find` snippet does not occur exactly once:\n{find[:400]}{hint}", ""
             target.write_text(new)
         diff = "".join(
             "".join(difflib.unified_diff(old.splitlines(True), (dest / rel).read_text().splitlines(True),
@@ -803,10 +845,53 @@ def _replace_once(text: str, find: str, replace: str) -> str | None:
         return None
     hits = [i for i in range(len(lines) - len(flines) + 1)
             if [x.rstrip() for x in lines[i:i + len(flines)]] == flines]
+    if len(hits) == 1:
+        i = hits[0]
+        return "\n".join(lines[:i] + replace.strip("\n").split("\n") + lines[i + len(flines):])
+    span = _locate_lines(text, find)
+    if span is None:
+        return None
+    a, b = span
+    return "\n".join(lines[:a] + replace.strip("\n").split("\n") + lines[b + 1:])
+
+
+def _is_code(path: str) -> bool:
+    """Behavioural source files. Version stamps are .py but never explain a regression."""
+    name = path.rsplit("/", 1)[-1]
+    return name.endswith((".py", ".pyx", ".pyi")) and name not in {"_version.py", "version.py", "__version__.py", "__about__.py"}
+
+
+_TOKEN = re.compile(r"[^\s#]+")
+
+
+def _locate_lines(text: str, find: str) -> tuple[int, int] | None:
+    """Find the unique run of whole lines whose tokens equal the snippet's, ignoring all whitespace,
+    line wrapping and comment markers. Handles code that was re-wrapped or reformatted after the
+    model last saw it (e.g. a later "code cleanup" commit). Returns (first line, last line)."""
+    target = _TOKEN.findall(find)
+    if len(target) < 3:
+        return None
+    toks: list[tuple[str, int]] = [(t, n) for n, line in enumerate(text.split("\n")) for t in _TOKEN.findall(line)]
+    words = [t for t, _ in toks]
+    hits = [i for i in range(len(words) - len(target) + 1) if words[i:i + len(target)] == target]
     if len(hits) != 1:
         return None
     i = hits[0]
-    return "\n".join(lines[:i] + replace.strip("\n").split("\n") + lines[i + len(flines):])
+    return toks[i][1], toks[i + len(target) - 1][1]
+
+
+def _closest_region(text: str, find: str, context: int = 3) -> str:
+    """The lines of `text` that best match `find`, to show the model what is really there."""
+    lines = text.split("\n")
+    first = next((ln.strip() for ln in find.split("\n") if ln.strip()), "")
+    if not first:
+        return ""
+    best = difflib.get_close_matches(first, [ln.strip() for ln in lines], n=1, cutoff=0.5)
+    if not best:
+        return ""
+    i = [ln.strip() for ln in lines].index(best[0])
+    n = len(find.strip("\n").split("\n"))
+    return "\n".join(lines[max(0, i - context): i + n + context])
 
 
 def _normalise_patch(patch: str) -> str:
