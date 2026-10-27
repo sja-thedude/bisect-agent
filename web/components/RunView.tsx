@@ -1,8 +1,9 @@
 "use client";
 import { useMemo, useState } from "react";
-import { CallRecord, RunEvent, RunState, repoName, short, Step, tierLabel } from "@/lib/api";
+import { CallRecord, RunEvent, RunState, repoName, short, Step, tierLabel, usd } from "@/lib/api";
 import { useRun } from "@/lib/useRun";
 import { CodeView, DiffView } from "./DiffView";
+import { Timeline } from "./Timeline";
 
 const PHASES = ["clone", "reproduce", "confirm", "bisect", "research", "explain", "fix", "verify", "done"];
 
@@ -92,6 +93,10 @@ function LogLine({ ev, t0 }: { ev: RunEvent; t0: number }) {
       return <div className="text-ink/80">{time}reproduction test drafted (attempt {p.attempt}): <span className="text-muted">{p.symptom}</span></div>;
     case "research_decision":
       return <div className="text-[#c4b5fd]">{time}upstream research {p.needs_upstream_research ? "WARRANTED" : "not needed"}: <span className="text-muted">{p.reason}</span></div>;
+    case "range":
+      return <div className="text-ink/80">{time}bisect range: {p.commits.length} candidate commits{p.filtered_out > 0 && <span className="text-muted"> ({p.filtered_out} docs/CI-only commits filtered out)</span>}</div>;
+    case "counterfactual":
+      return <div className={p.status === "confirmed" ? "font-semibold text-good" : "text-skip"}>{time}causal check: {p.status === "confirmed" ? "reverting the culprit on HEAD makes the test PASS ✓" : p.status.replace("_", " ")}</div>;
     case "verification":
       return <div className={p.repro_passes && !p.new_failures.length ? "text-good" : "text-skip"}>{time}{p.verdict}</div>;
     default:
@@ -142,17 +147,33 @@ function StepsTable({ steps, pending }: { steps: Step[]; pending: { index: numbe
   );
 }
 
-function ModelPanel({ calls }: { calls: CallRecord[] }) {
+function ModelPanel({ calls, economics }: { calls: CallRecord[]; economics: RunState["economics"] }) {
   const totals = useMemo(() => {
-    const t: Record<string, { model: string; calls: number; pin: number; pout: number; lat: number }> = {};
+    const t: Record<string, { model: string; calls: number; pin: number; pout: number; lat: number; cost: number }> = {};
     for (const c of calls) {
-      const x = (t[c.tier] ??= { model: c.model, calls: 0, pin: 0, pout: 0, lat: 0 });
-      x.calls++; x.pin += c.prompt_tokens; x.pout += c.completion_tokens; x.lat += c.latency_s;
+      const x = (t[c.tier] ??= { model: c.model, calls: 0, pin: 0, pout: 0, lat: 0, cost: 0 });
+      x.calls++; x.pin += c.prompt_tokens; x.pout += c.completion_tokens; x.lat += c.latency_s; x.cost += c.cost_usd ?? 0;
     }
     return t;
   }, [calls]);
+  const actual = Object.values(totals).reduce((a, t) => a + t.cost, 0);
   return (
     <div className="space-y-3">
+      {calls.length > 0 && (
+        <div className="rounded-lg border border-nv/30 bg-nv/5 p-3">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[11px] font-semibold uppercase tracking-wider text-muted">Run cost</span>
+            <span className="font-mono text-lg font-semibold text-ink">{usd(actual)}</span>
+          </div>
+          {economics?.all_reason_usd ? (
+            <p className="mt-1 text-[12px] leading-snug text-muted">
+              Same tokens all on Ultra: <span className="font-mono text-ink">{usd(economics.all_reason_usd)}</span>.
+              Routing saved <span className="font-semibold text-nv">{economics.saved_pct}%</span> while Nano handled{" "}
+              <span className="text-ink">{Math.round((economics.fast_share_of_calls ?? 0) * 100)}%</span> of calls.
+            </p>
+          ) : null}
+        </div>
+      )}
       {(["reason", "fast"] as const).map((tier) => {
         const t = totals[tier];
         return (
@@ -163,6 +184,7 @@ function ModelPanel({ calls }: { calls: CallRecord[] }) {
               <div><div className="font-mono text-lg text-ink">{t ? ((t.pin + t.pout) / 1000).toFixed(1) + "k" : "0"}</div><div className="text-[10.5px] uppercase text-muted">tokens</div></div>
               <div><div className="font-mono text-lg text-ink">{t && t.calls ? (t.lat / t.calls).toFixed(1) + "s" : "—"}</div><div className="text-[10.5px] uppercase text-muted">avg latency</div></div>
             </div>
+            {t && <div className="mt-1.5 text-right font-mono text-[11px] text-muted">{usd(t.cost)}</div>}
           </div>
         );
       })}
@@ -181,6 +203,72 @@ function ModelPanel({ calls }: { calls: CallRecord[] }) {
         </table>
       </div>
     </div>
+  );
+}
+
+function CausalProof({ st }: { st: RunState }) {
+  const c = st.counterfactual;
+  if (!c?.status) return null;
+  const sha = short(st.first_bad.sha);
+  const ok = c.status === "confirmed";
+  const text = ok
+    ? <>Reverting <span className="font-mono">{sha}</span> alone on today&apos;s HEAD makes the reproduction test <b>pass</b>{c.partial ? <> (partial revert; left {c.skipped_files?.join(", ")} untouched)</> : null}. This commit is why the bug exists now, not just where it started.</>
+    : c.status === "not_confirmed"
+      ? <>Reverting <span className="font-mono">{sha}</span> on HEAD does not make the test pass ({c.pytest}): later commits also contribute.</>
+      : c.status === "conflict"
+        ? <>Could not revert <span className="font-mono">{sha}</span> on HEAD: later commits rewrote the same lines.</>
+        : <>Counterfactual check could not run ({c.detail || c.status}).</>;
+  return (
+    <div className={`mt-3 flex items-start gap-3 rounded-lg border px-3 py-2.5 ${ok ? "border-good/40 bg-good/5" : "border-skip/40 bg-skip/5"}`}>
+      <span className={`mt-0.5 rounded px-1.5 py-[1px] text-[10.5px] font-bold uppercase tracking-wide ${ok ? "bg-good/15 text-good" : "bg-skip/15 text-skip"}`}>
+        {ok ? "causal proof ✓" : "causal check"}
+      </span>
+      <p className="text-[13px] leading-relaxed text-ink/90">{text}</p>
+    </div>
+  );
+}
+
+function issueMarkdown(st: RunState): string {
+  const fb = st.first_bad, ex = st.explanation, v = st.fix?.verification;
+  const lines = [
+    `## Regression: ${ex.headline ?? fb.subject}`,
+    "",
+    `**First bad commit:** [\`${short(fb.sha)}\` ${fb.subject}](${fb.url})${fb.ambiguous ? " _(most likely; bisect was ambiguous)_" : ""}`,
+    `**Range bisected:** \`${short(st.good_sha)}..${short(st.bad_sha)}\` (${st.range_size} commits, ${st.steps.length} tested)`,
+    st.counterfactual?.status === "confirmed" ? `**Causal check:** reverting \`${short(fb.sha)}\` on HEAD makes the reproduction pass.` : "",
+    "",
+    "### Report",
+    `> ${st.input.bug_report.replace(/\n/g, "\n> ")}`,
+    "",
+    "### What changed",
+    ex.what_changed ?? "",
+    "",
+    "### Causal chain",
+    ...(ex.causal_chain ?? []).map((c, i) => `${i + 1}. ${c}`),
+    "",
+    "### Reproduction",
+    "```python",
+    st.repro.code ?? "",
+    "```",
+  ];
+  if (st.research?.findings?.length) {
+    lines.push("", "### Upstream findings", ...st.research.findings.map((f) => `- ${f.fact} ([source](${f.url}))`));
+  }
+  if (st.fix?.diff) {
+    lines.push("", `### Proposed fix${st.fix.verdict ? ` (${st.fix.verdict})` : ""}`, st.fix.rationale ?? "", "", "```diff", st.fix.diff.trimEnd(), "```");
+    if (v) lines.push("", `Reproduction ${v.repro_passes ? "passes" : "still fails"}; full suite ${v.patched.total - v.patched.failing}/${v.patched.total} passing, ${v.new_failures.length} new failures.`);
+  }
+  lines.push("", `_Found by [Bisect](https://github.com/sja-thedude/bisect-agent) with NVIDIA Nemotron on Nebius Token Factory._`);
+  return lines.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n");
+}
+
+function ExportButton({ st }: { st: RunState }) {
+  const [done, setDone] = useState(false);
+  return (
+    <button onClick={() => { navigator.clipboard.writeText(issueMarkdown(st)); setDone(true); setTimeout(() => setDone(false), 1800); }}
+      className="rounded-lg bg-ink px-3 py-1.5 text-[12.5px] font-semibold text-bg hover:bg-white">
+      {done ? "Copied ✓" : "Copy as GitHub issue"}
+    </button>
   );
 }
 
@@ -205,6 +293,16 @@ function ReportCard({ st }: { st: RunState }) {
           <p className="mt-1 text-ink/90">{st.error || st.limits_hit.join("; ") || "The run ended without isolating a commit."}</p>
         )}
         {ex.headline && <p className="mt-3 text-[15px] leading-relaxed text-ink">{ex.headline}</p>}
+        {fb.sha && <CausalProof st={st} />}
+        {fb.sha && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <ExportButton st={st} />
+            {st.repro.code && (
+              <a download="test_bisect_repro.py" href={`data:text/x-python;charset=utf-8,${encodeURIComponent(st.repro.code)}`}
+                className="rounded-lg border border-line px-3 py-1.5 text-[12.5px] text-ink hover:border-nv/60">Download repro test</a>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="grid gap-6 p-5 lg:grid-cols-5">
@@ -288,6 +386,15 @@ function ReportCard({ st }: { st: RunState }) {
             )}
           </div>
           {st.fix.rationale && <p className="mb-3 text-[13.5px] text-ink/90">{st.fix.rationale}</p>}
+          {!!st.fix.attempts?.length && (
+            <ol className="mb-3 flex flex-wrap gap-2 text-[11.5px]">
+              {st.fix.attempts.map((a) => (
+                <li key={a.attempt} title={a.detail} className={`rounded-full px-2.5 py-0.5 ring-1 ${a.result === "reproduction passes" ? "text-good ring-good/40" : "text-skip ring-skip/40"}`}>
+                  attempt {a.attempt}: {a.result}
+                </li>
+              ))}
+            </ol>
+          )}
           <DiffView diff={st.fix.diff} />
           {v && (
             <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -330,6 +437,11 @@ export function RunView({ id, onBack }: { id: string; onBack: () => void }) {
   }, [events, steps, st?.phase]);
   const phase = useMemo(() => [...events].reverse().find((e) => e.kind === "phase")?.payload.phase ?? st?.phase ?? "queued", [events, st?.phase]);
   const repro = useMemo(() => [...events].reverse().find((e) => e.kind === "repro")?.payload, [events]);
+  const rangeCommits: string[] = useMemo(() => {
+    const ev = events.find((e) => e.kind === "range");
+    return ev ? ev.payload.commits : (st?.range_commits ?? []).map((c) => c.sha);
+  }, [events, st?.range_commits]);
+  const culprit = useMemo(() => events.find((e) => e.kind === "first_bad")?.payload.sha as string | undefined, [events]);
   const skipped = useMemo(() => {
     const seen = new Set(events.filter((e) => e.kind === "phase").map((e) => e.payload.phase as string));
     return new Set(phase === "done" ? PHASES.filter((p) => !seen.has(p)) : []);
@@ -372,6 +484,7 @@ export function RunView({ id, onBack }: { id: string; onBack: () => void }) {
       <div className="grid gap-5 lg:grid-cols-3">
         <div className="space-y-5 lg:col-span-2">
           <Panel title="Bisection" right={<span className="font-mono text-[11px] text-muted">{steps.length} / 15 steps</span>}>
+            {rangeCommits.length > 0 && <div className="mb-4"><Timeline commits={rangeCommits} steps={steps} culprit={culprit} pendingSha={pending?.sha} /></div>}
             <StepsTable steps={steps} pending={pending} />
           </Panel>
           <Panel title="Live log" right={streaming ? <span className="flex items-center gap-1.5 text-[11px] text-nv"><span className="pulse-dot h-1.5 w-1.5 rounded-full bg-nv" />live</span> : null}>
@@ -381,7 +494,7 @@ export function RunView({ id, onBack }: { id: string; onBack: () => void }) {
           </Panel>
         </div>
         <div className="space-y-5">
-          <Panel title="Model routing · Nebius Token Factory"><ModelPanel calls={calls} /></Panel>
+          <Panel title="Model routing · Nebius Token Factory"><ModelPanel calls={calls} economics={st.economics} /></Panel>
           {(repro || st.repro.code) && (
             <Panel title="Reproduction test" right={<span className="font-mono text-[11px] text-muted">{st.repro.path}</span>}>
               {(repro?.symptom || st.repro.symptom) && <p className="mb-2 text-[12.5px] text-ink/85">{repro?.symptom || st.repro.symptom}</p>}
