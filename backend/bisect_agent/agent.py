@@ -294,6 +294,10 @@ class Agent:
         return REPRO_NAME
 
     def _reproduce(self) -> None:
+        """Ultra writes several candidate tests at once; each attempt runs them at HEAD and at the
+        known-good commit in parallel, and the first candidate that fails at HEAD (with a real
+        assertion) and passes at known-good is kept. Failing attempts go back to Ultra with a
+        per-candidate table and the full history, so repairs converge instead of oscillating."""
         st = self.state
         self.phase("reproduce")
         context = self._gather_context()
@@ -302,36 +306,46 @@ class Agent:
                 f"REPOSITORY CONTEXT:\n{context}")
         res = self.router.call("write_repro_test", prompts.WRITE_REPRO_TEST, user, json_out=True)
         self._set_repro(res.data, attempt=1)
+        history: list[str] = []
 
         for attempt in range(1, MAX_REPRO_ATTEMPTS + 1):
             self.check_time(60)
             self.phase("confirm")
-            self.log(f"Running reproduction test at HEAD {st.bad_sha[:10]} (attempt {attempt})")
-            head = self._run_repro(st.bad_sha)
-            st.head_run = _sanitize(head)
-            problem = self._head_problem(head)
-            if not problem:
-                self.log(f"Reproduction test fails at HEAD as expected ({head.duration_s}s).")
-                self.log(f"Running it at known-good {st.good_sha[:10]}")
-                good = self._run_repro(st.good_sha)
-                st.good_run = _sanitize(good)
-                if good.status == "passed":
-                    self.log(f"Passes at known-good ({good.duration_s}s). Reproduction confirmed.")
-                    self.emit("repro_confirmed", head=st.head_run, good=st.good_run)
-                    return
-                problem = ("it must PASS at the known-good commit, but there it gave status "
-                           f"{good.status!r}", good)
+            self.log(f"Running candidate tests at HEAD {st.bad_sha[:10]} and known-good {st.good_sha[:10]} "
+                     f"in parallel (attempt {attempt})")
+            f_head = self._pool.submit(self._run_repro, st.bad_sha)
+            f_good = self._pool.submit(self._run_repro, st.good_sha)
+            head, good = f_head.result(), f_good.result()
+            table, winners = _candidate_table(head, good)
+            if winners:
+                code = _keep_tests(st.repro["code"], winners)
+                if code != st.repro["code"]:
+                    self.log(f"Kept {len(winners)} of {len(table)} candidates: {', '.join(winners)}.")
+                    st.repro["code"] = code
+                    self.emit("repro", path=st.repro["path"], code=code, rationale=st.repro.get("rationale", ""),
+                              symptom=st.repro.get("symptom", ""), attempt=attempt, kept=winners)
+                    head = self._run_repro(st.bad_sha)  # clean reference failure for the classifier
+                st.head_run, st.good_run = _sanitize(head), _sanitize(good)
+                self.log(f"Reproduction confirmed: fails at HEAD ({head.duration_s}s), passes at known-good.")
+                self.emit("repro_confirmed", head=st.head_run, good=st.good_run)
+                return
+            st.head_run, st.good_run = _sanitize(head), _sanitize(good)
+            summary = "; ".join(f"{name}: HEAD {h}, known-good {g}" for name, h, g, _ in table) or \
+                f"no test results (HEAD pytest {head.status}, known-good pytest {good.status})"
+            history.append(f"Attempt {attempt}: {summary}")
             if attempt == MAX_REPRO_ATTEMPTS:
                 break
-            msg, run = problem
-            self.log(f"Reproduction not confirmed: {msg}. Asking for a revised test.", "warn")
+            self.log(f"No candidate reproduces cleanly ({summary}). Asking for revised candidates.", "warn")
             self.phase("reproduce")
-            where = "HEAD (expected to fail)" if run.sha == st.bad_sha else "the known-good commit (expected to pass)"
-            repair_user = (f"BUG REPORT:\n{st.input.bug_report}\n\nCURRENT TEST ({st.repro['path']}):\n"
-                           f"```python\n{st.repro['code']}\n```\n\nRAN AT: {where}\nPROBLEM: {msg}\n\n"
-                           f"PYTEST OUTPUT:\n{run.output_tail[-5000:]}\n\nREPOSITORY CONTEXT:\n{context[:60000]}")
-            if run.sha == st.good_sha:
-                repair_user += self._good_ref_context()
+            rows = "\n".join(f"- {name}: at HEAD {h}{(' - ' + msg) if msg else ''}; at known-good {g}"
+                             for name, h, g, msg in table)
+            repair_user = (
+                f"BUG REPORT:\n{st.input.bug_report}\n\nCURRENT CANDIDATES ({st.repro['path']}):\n"
+                f"```python\n{st.repro['code']}\n```\n\nRESULTS (required: FAIL with an assertion at HEAD, PASS at "
+                f"known-good):\n{rows or '(no per-test results; see output)'}\n\nHISTORY OF EARLIER ATTEMPTS:\n"
+                + "\n".join(history) +
+                f"\n\nPYTEST OUTPUT AT HEAD:\n{head.output_tail[-3000:]}\n\nPYTEST OUTPUT AT KNOWN-GOOD:\n"
+                f"{good.output_tail[-3000:]}\n\nREPOSITORY CONTEXT:\n{context[:50000]}{self._good_ref_context()}")
             res = self.router.call("repair_repro_test", prompts.REPAIR_REPRO_TEST, repair_user, json_out=True)
             self._set_repro(res.data, attempt=attempt + 1)
         st.outcome = "failed"
@@ -355,18 +369,6 @@ class Agent:
                                 attempts=attempt)
         self.emit("repro", path=self.state.repro["path"], code=code, rationale=data.get("rationale", ""),
                   symptom=data.get("symptom", ""), attempt=attempt)
-
-    def _head_problem(self, run: TestRun) -> tuple[str, TestRun] | None:
-        failed = [c for c in run.cases if c.outcome == "failed"]
-        if run.status == "failed" and failed:
-            broken = [c for c in failed if _NOT_A_SYMPTOM.search(c.message)]
-            if len(broken) == len(failed):
-                return (f"it failed at HEAD, but with {broken[0].message[:200]!r}, which is a broken test, "
-                        "not the reported behaviour", run)
-            return None
-        if run.status == "passed":
-            return "it PASSED at HEAD, so it does not capture the bug", run
-        return f"it must FAIL with an assertion at HEAD, but pytest reported {run.status!r} (not an assertion failure)", run
 
     # -------------------------------------------------------------- bisect
     def _classify(self, run: TestRun) -> tuple[str, str, CallRecord | None]:
@@ -900,6 +902,50 @@ def _is_code(path: str) -> bool:
 
 
 _TOKEN = re.compile(r"[^\s#]+")
+
+
+def _case_name(nodeid: str) -> str:
+    return nodeid.rsplit("::", 1)[-1].split("[", 1)[0]
+
+
+def _candidate_table(head: TestRun, good: TestRun) -> tuple[list[tuple[str, str, str, str]], list[str]]:
+    """Per-candidate outcomes at HEAD and known-good, and the candidates that reproduce the bug:
+    a real assertion failure at HEAD (not an ImportError-style breakage) and a pass at known-good."""
+    good_by = {_case_name(c.nodeid): c for c in good.cases}
+    table, winners = [], []
+    for c in head.cases:
+        name = _case_name(c.nodeid)
+        g = good_by.get(name)
+        g_out = g.outcome if g else f"not collected ({good.status})"
+        h_out = c.outcome
+        if c.outcome == "failed" and _NOT_A_SYMPTOM.search(c.message):
+            h_out = "broken (not the symptom)"
+        table.append((name, h_out, g_out, c.message[:160]))
+        if h_out == "failed" and g is not None and g.outcome == "passed":
+            winners.append(name)
+    return table, winners
+
+
+def _keep_tests(code: str, keep: list[str]) -> str:
+    """Drop candidate test functions that did not reproduce the bug. Parses the file with `ast`
+    (nothing is executed); module-level imports and helpers are kept as they are."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+    lines = code.splitlines(keepends=True)
+    drop: list[tuple[int, int]] = []
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test") \
+                and node.name not in keep:
+            first = min([node.lineno] + [d.lineno for d in node.decorator_list])
+            drop.append((first - 1, node.end_lineno))
+    if not drop:
+        return code
+    for a, b in sorted(drop, reverse=True):
+        del lines[a:b]
+    return re.sub(r"\n{4,}", "\n\n\n", "".join(lines))
 
 
 def _counterfactual_status(pytest_status: str) -> str:
