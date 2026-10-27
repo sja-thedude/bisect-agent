@@ -96,7 +96,11 @@ Write the smallest correct fix against HEAD that makes the reproduction test pas
 the culprit commit (keep any legitimate improvements it made). If the cause is an upstream dependency, fix the
 code to work with the new version where reasonable; pin or constrain the dependency only as a last resort.
 
-Output a unified diff with `--- a/<path>` and `+++ b/<path>` headers, relative to the repository root, that applies
-cleanly with `git apply` to the HEAD files shown. Include enough unchanged context lines (3) for each hunk.
+Express the fix as exact search-and-replace edits on the HEAD files:
+- "path": repository-relative path of an existing file shown to you.
+- "find": a snippet copied VERBATIM from that HEAD file (same indentation and whitespace), 2 to 15 lines long,
+  that occurs EXACTLY ONCE in the file.
+- "replace": the new text for that snippet.
 Do not modify or add the reproduction test.
-Reply with JSON only: {"diff": "<unified diff>", "rationale": "<two or three sentences>"}"""
+Reply with JSON only:
+{"edits": [{"path": "...", "find": "...", "replace": "..."}], "rationale": "<two or three sentences>"}"""

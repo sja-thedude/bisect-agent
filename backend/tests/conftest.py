@@ -47,7 +47,8 @@ def build_fixture_repo(root: Path, n: int = 40, culprit: int = 23) -> Path:
     (src / "tests" / "test_basic.py").write_text("from csvlite import split_fields\n\ndef test_simple():\n    assert split_fields('a,b') == ['a', 'b']\n")
     for i in range(n):
         impl = BAD_IMPL if i >= culprit else GOOD_IMPL
-        (src / "csvlite" / "__init__.py").write_text(f"VERSION = {i}\n" + impl)
+        (src / "csvlite" / "__init__.py").write_text("from ._version import VERSION\n" + impl)
+        (src / "csvlite" / "_version.py").write_text(f"VERSION = {i}\n")
         if i == 30:
             (src / "pyproject.toml").write_text('[project]\nname="csvlite"\nversion="0.1"\ndependencies=["six==1.16.0"]\n'
                                                 '[build-system]\nrequires=["setuptools"]\nbuild-backend="setuptools.build_meta"\n')

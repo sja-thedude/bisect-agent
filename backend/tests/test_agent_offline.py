@@ -43,7 +43,8 @@ def fake_transport(head_init: str):
             out = {"headline": "split() ignores quotes", "what_changed": "w", "causal_chain": ["a", "b"],
                    "why_tests_missed_it": "", "confidence": "high", "citations": []}
         elif system == prompts.PROPOSE_FIX:
-            out = {"diff": fix_diff, "rationale": "restore quote-aware splitting"}
+            out = {"edits": [{"path": "csvlite/__init__.py", "find": BAD_IMPL.strip("\n"),
+                              "replace": GOOD_IMPL.strip("\n")}], "rationale": "restore quote-aware splitting"}
         else:
             raise AssertionError(f"unexpected task: {system[:60]}")
         return httpx.Response(200, json={
@@ -73,6 +74,9 @@ def test_agent_end_to_end(fixture_repo, test_settings, monkeypatch):
     assert len(state.steps) <= 15
     assert any(s.speculative_hit for s in state.steps), "speculative prefetch never hit"
     assert state.fix["verdict"] == "Fix verified", state.fix
+    assert state.counterfactual["status"] == "confirmed", state.counterfactual
+    assert state.economics["saved_pct"] > 0
+    assert len(state.range_commits) == 39  # 46 commits, minus the known-good root and 6 docs-only commits
     tiers = {c["task"]: c["tier"] for c in state.calls}
     assert tiers["classify_verdict"] == "fast" and tiers["explain_culprit"] == "reason"
     models = {c["model"] for c in state.calls}
