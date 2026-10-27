@@ -13,3 +13,4 @@ web/out/
 
 # local run data
 backend/data/
+web/public/demo/
