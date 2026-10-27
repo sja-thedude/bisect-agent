@@ -46,7 +46,7 @@ export interface RunState {
     findings?: { fact: string; url: string }[]; upstream_change?: string; skipped?: string; packages?: unknown[] };
   explanation: { headline?: string; what_changed?: string; causal_chain?: string[]; why_tests_missed_it?: string;
     confidence?: string; citations?: string[] };
-  fix: { diff?: string; rationale?: string; applied?: boolean; apply_error?: string; verdict?: string; attempt?: number;
+  fix: { diff?: string; rationale?: string; applied?: boolean; apply_error?: string; verdict?: string; attempt?: number; fallback?: string;
     attempts?: { attempt: number; result: string; detail?: string }[];
     verification?: { repro_passes: boolean; new_failures: string[];
       baseline: { status: string; total: number; failing: number; duration_s: number };

@@ -382,7 +382,7 @@ function ReportCard({ st }: { st: RunState }) {
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted">Proposed fix <TierChip tier="reason" /></h4>
             {st.fix.verdict && (
-              <span className={`rounded-full px-2.5 py-1 text-[12px] font-semibold ring-1 ${st.fix.verdict === "Fix verified" ? "bg-good/10 text-good ring-good/40" : "bg-skip/10 text-skip ring-skip/40"}`}>{st.fix.verdict}</span>
+              <span className={`rounded-full px-2.5 py-1 text-[12px] font-semibold ring-1 ${st.fix.verdict?.endsWith("verified") ? "bg-good/10 text-good ring-good/40" : "bg-skip/10 text-skip ring-skip/40"}`}>{st.fix.verdict}</span>
             )}
           </div>
           {st.fix.rationale && <p className="mb-3 text-[13.5px] text-ink/90">{st.fix.rationale}</p>}

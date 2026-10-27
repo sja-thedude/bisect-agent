@@ -125,6 +125,7 @@ class Agent:
         py = state.input.python if state.input.python in SUPPORTED_PYTHONS else "3.11"
         self.sandbox = Sandbox(settings, python=py)
         self.repo: Repo | None = None
+        self._reverted: tuple[Path, str] | None = None  # HEAD with the culprit reverted, if that passed
         self.snap_key = ""
         self._deps_cache: dict[str, str] = {}
         self._pool = cf.ThreadPoolExecutor(max_workers=max(1, settings.limits.parallel_runs))
@@ -587,6 +588,7 @@ class Agent:
         skipped: list[str] = []
         if tree:
             patched = self.sandbox.snapshot(self.repo.path, tree, self.snap_key + "-reverts")
+            revert_diff = self.repo.git("diff", st.bad_sha, tree, check=False)
         else:
             conflicted = [f.strip() for f in err.removeprefix("conflicts in:").split(",") if f.strip()]
             if any(_is_code(f) for f in conflicted) or not err.startswith("conflicts in:"):
@@ -602,17 +604,21 @@ class Agent:
                 return {"status": "conflict", "detail": (err + " " + apply_err)[:400]}
             self.log(f"Counterfactual: full revert conflicts in {', '.join(skipped)}; reverting the other "
                      f"{len(keep)} file(s) of the culprit.")
+            revert_diff = reverse
         key, ok = self._deps_key(patched)
         if not ok:
             return {"status": "install_failed", "detail": "dependencies for the reverted tree failed to install"}
         run = self.sandbox.run_pytest(patched, st.bad_sha, key, inject={st.repro["path"]: st.repro["code"]},
                                       targets=[st.repro["path"]], timeout_s=self.test_timeout())
         status = "confirmed" if run.status == "passed" else "not_confirmed"
+        if status == "confirmed":
+            self._reverted = (patched, revert_diff)
         self.log(f"Counterfactual {'CONFIRMED' if status == 'confirmed' else 'not confirmed'}: "
                  f"HEAD minus {sha[:10]} -> pytest {run.status} ({run.duration_s}s).",
                  "info" if status == "confirmed" else "warn")
         return {"status": status, "pytest": run.status, "duration_s": run.duration_s, "partial": bool(skipped),
-                "skipped_files": skipped, "method": "git_revert", "output_tail": run.output_tail[-1500:]}
+                "skipped_files": skipped, "method": "git_revert", "revert_diff": revert_diff[:20000],
+                "output_tail": run.output_tail[-1500:]}
 
     def _resolved_counterfactual(self, sha: str, conflicted: list[str], err: str) -> dict:
         """Later commits rewrote the culprit's lines, so `git revert` conflicts. The reasoning tier
@@ -644,6 +650,8 @@ class Agent:
         run = self.sandbox.run_pytest(patched, st.bad_sha, key, inject={st.repro["path"]: st.repro["code"]},
                                       targets=[st.repro["path"]], timeout_s=self.test_timeout())
         status = "confirmed" if run.status == "passed" else "not_confirmed"
+        if status == "confirmed":
+            self._reverted = (patched, patch)
         self.log(f"Counterfactual {'CONFIRMED' if status == 'confirmed' else 'not confirmed'} (revert resolved by the "
                  f"reasoning tier): HEAD minus {sha[:10]} -> pytest {run.status} ({run.duration_s}s).",
                  "info" if status == "confirmed" else "warn")
@@ -701,8 +709,15 @@ class Agent:
         self.check_time(120)
         self.phase("fix")
         sha = st.first_bad["sha"]
-        files = [f for f in st.first_bad.get("files", []) if self.repo.file_at(st.bad_sha, f) is not None][:8]
-        head_files = "\n\n".join(f"===== {f} (at HEAD) =====\n{self.repo.file_at(st.bad_sha, f, 30000)}" for f in files)
+        candidates = st.first_bad.get("files", []) + [f for f in st.repro.get("context_files", [])
+                                                         if _is_code(f) and "test" not in f.rsplit("/", 1)[-1]]
+        files, budget = [], 120_000
+        for f in dict.fromkeys(candidates):
+            body = self.repo.file_at(st.bad_sha, f, 30000) if (_is_code(f) or f in st.first_bad.get("files", [])) else None
+            if body is not None and budget - len(body) > 0 and len(files) < 10:
+                files.append((f, body))
+                budget -= len(body)
+        head_files = "\n\n".join(f"===== {f} (at HEAD) =====\n{body}" for f, body in files)
         base_user = (f"BUG REPORT:\n{st.input.bug_report}\n\nEXPLANATION:\n{st.explanation}\n\n"
                      f"REPRODUCTION TEST ({st.repro['path']}):\n```python\n{st.repro['code']}\n```\n\n"
                      f"CULPRIT DIFF:\n{self.repo.diff(sha, 30000)}\n\nHEAD FILES:\n{head_files}")
@@ -736,6 +751,18 @@ class Agent:
             feedback = (f"\n\nYOUR PREVIOUS FIX (attempt {attempt}):\n{patch}\n\nThe reproduction test still fails on "
                         f"HEAD + that fix:\n{(run.output_tail if run else '')[-3000:]}\nWrite a corrected fix against "
                         f"the ORIGINAL HEAD files (not on top of your previous attempt).")
+        if self._reverted:
+            patched, diff = self._reverted
+            self.log("No targeted fix passed within 3 attempts; falling back to the revert that the causal check "
+                     "already proved restores the behaviour, and verifying it against the full suite.", "warn")
+            attempts.append({"attempt": len(attempts) + 1, "result": "fallback: revert of the culprit"})
+            st.fix = {"diff": diff, "attempt": len(attempts), "attempts": attempts, "fallback": "revert",
+                      "rationale": (f"Fallback: revert {sha[:10]} on HEAD. A targeted fix that keeps the commit's other "
+                                    "changes did not pass within 3 attempts; this restores the old behaviour and is "
+                                    "checked against the full suite like any other fix."), "applied": True}
+            self.emit("fix", diff=diff, rationale=st.fix["rationale"], attempt=len(attempts))
+            self._verify(patched)
+            return
         st.fix["verdict"] = "No working fix found"
         self.log("No fix made the reproduction test pass within 3 attempts.", "warn")
 
@@ -827,7 +854,8 @@ class Agent:
             "new_failures": new_failures[:30],
             "output_tail": fixed.output_tail[-3000:],
         }
-        verdict = ("Fix verified" if repro_passes and not new_failures else
+        ok_label = "Revert verified" if st.fix.get("fallback") == "revert" else "Fix verified"
+        verdict = (ok_label if repro_passes and not new_failures else
                    "Fix needs work" if not repro_passes else "Fix introduces new failures")
         st.fix["verdict"] = verdict
         self.log(f"{verdict}: reproduction {'passes' if repro_passes else 'still fails'}, "
