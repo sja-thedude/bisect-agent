@@ -59,3 +59,12 @@ Newest entries at the bottom. Each entry: date, tool, what happened, what I expe
   queries to github.com gave noticeably more relevant hits. Advanced-depth searches took ~5 s each.
 - `include_answer` returned a useful one-paragraph synthesis, but there is no way to ask for citations inside it, so I
   digest the raw results with Nemotron Nano to keep a URL attached to every fact.
+
+## 2026-10-28 — a stalled Ultra request
+
+- One non-streamed `propose_fix` call to Ultra took **678 s** end to end for 16.7k output tokens, while comparable calls
+  ran at ~300 tokens/s (e.g. 4.1k tokens in 13 s). Most likely two 300 s client read timeouts before a retry succeeded.
+  I can't tell from the client whether the server or the network stalled, and there was no request ID in the response
+  to report. Switching to streaming (`stream: true` + `stream_options.include_usage`) let me detect stalls within 60 s
+  and bound each call. Streaming usage includes `reasoning_tokens` too, which is nice. Suggestion: return an
+  `x-request-id` header and document recommended client timeouts for long reasoning generations.
