@@ -215,6 +215,8 @@ function CausalProof({ st }: { st: RunState }) {
     ? <>Reverting <span className="font-mono">{sha}</span> alone on today&apos;s HEAD makes the reproduction test <b>pass</b>{c.partial ? <> (partial revert; left {c.skipped_files?.join(", ")} untouched)</> : null}. This commit is why the bug exists now, not just where it started.{c.method === "model_resolved" && <> <span className="text-muted">(git revert conflicted with later reformatting; the reasoning tier resolved the revert against HEAD, and the sandbox ran the test.)</span></>}</>
     : c.status === "not_confirmed"
       ? <>Reverting <span className="font-mono">{sha}</span> on HEAD does not make the test pass ({c.pytest}): later commits also contribute.</>
+      : c.status === "inconclusive"
+        ? <>Reverting <span className="font-mono">{sha}</span> on HEAD left the test unable to run ({c.pytest}), so this check is inconclusive.</>
       : c.status === "conflict"
         ? <>Could not revert <span className="font-mono">{sha}</span> on HEAD: later commits rewrote the same lines.</>
         : <>Counterfactual check could not run ({c.detail || c.status}).</>;
