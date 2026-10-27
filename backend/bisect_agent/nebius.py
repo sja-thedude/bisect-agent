@@ -5,6 +5,7 @@ provider anywhere in the codebase, by design (hackathon rule).
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -17,6 +18,13 @@ DEFAULT_BASE_URL = "https://api.tokenfactory.nebius.com/v1"
 
 class InferenceError(RuntimeError):
     pass
+
+
+class _Deadline(Exception):
+    pass
+
+
+STALL_S = 60  # seconds without a single streamed byte before a request is treated as stalled
 
 
 @dataclass
@@ -69,11 +77,16 @@ class TokenFactory:
         temperature: float = 0.2,
         json_mode: bool = False,
         thinking: bool | None = None,
-        retries: int = 4,
+        retries: int = 3,
+        deadline_s: float = 240.0,
     ) -> Completion:
+        """Streams the completion. The read timeout applies between chunks, so a long but
+        progressing generation is never cut off, a stalled one is detected within STALL_S, and
+        `deadline_s` bounds each attempt overall. Non-streamed JSON responses are accepted too."""
         if not self.api_key:
             raise InferenceError("NEBIUS_API_KEY is not set")
-        body: dict = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature}
+        body: dict = {"model": model, "messages": messages, "max_tokens": max_tokens, "temperature": temperature,
+                      "stream": True, "stream_options": {"include_usage": True}}
         if json_mode:
             body["response_format"] = {"type": "json_object"}
         if thinking is not None:
@@ -84,32 +97,63 @@ class TokenFactory:
         for attempt in range(retries + 1):
             t0 = time.monotonic()
             try:
-                r = self._client.post(f"{self.base_url}/chat/completions", json=body,
-                                      headers={"Authorization": f"Bearer {self.api_key}"})
+                with self._client.stream("POST", f"{self.base_url}/chat/completions", json=body,
+                                         headers={"Authorization": f"Bearer {self.api_key}"},
+                                         timeout=httpx.Timeout(connect=15, read=STALL_S, write=30, pool=30)) as r:
+                    if r.status_code == 200:
+                        return self._read(r, model, t0, deadline_s)
+                    r.read()
+                    last = f"HTTP {r.status_code}: {r.text[:500]}"
+                    if r.status_code == 429:
+                        delay = float(r.headers.get("retry-after", delay))
+                    elif r.status_code < 500:
+                        raise InferenceError(last)
+            except _Deadline:
+                last = f"no complete response within {deadline_s:.0f}s"
+            except httpx.ReadTimeout:
+                last = f"stream stalled (no data for {STALL_S}s)"
             except httpx.HTTPError as e:
                 last = f"transport error: {e}"
-            else:
-                if r.status_code == 200:
-                    data = r.json()
-                    msg = data["choices"][0]["message"]
-                    content, reasoning = _split_reasoning(msg)
-                    usage = data.get("usage") or {}
-                    return Completion(
-                        content=content, reasoning=reasoning,
-                        prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                        completion_tokens=int(usage.get("completion_tokens", 0)),
-                        latency_s=round(time.monotonic() - t0, 3), model=data.get("model", model),
-                        reasoning_tokens=int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0),
-                    )
-                last = f"HTTP {r.status_code}: {r.text[:500]}"
-                if r.status_code == 429:
-                    delay = float(r.headers.get("retry-after", delay))
-                elif r.status_code < 500:
-                    raise InferenceError(last)
             if attempt < retries:
                 time.sleep(delay)
                 delay = min(delay * 2, 30)
         raise InferenceError(last)
+
+    @staticmethod
+    def _read(r: httpx.Response, model: str, t0: float, deadline_s: float) -> Completion:
+        if "text/event-stream" not in r.headers.get("content-type", ""):
+            data = json.loads(r.read())
+            msg, usage, model = data["choices"][0]["message"], data.get("usage") or {}, data.get("model", model)
+        else:
+            content: list[str] = []
+            reasoning: list[str] = []
+            usage = {}
+            for line in r.iter_lines():
+                if time.monotonic() - t0 > deadline_s:
+                    raise _Deadline()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                ev = json.loads(payload)
+                usage = ev.get("usage") or usage
+                model = ev.get("model", model)
+                for ch in ev.get("choices") or []:
+                    d = ch.get("delta") or {}
+                    if d.get("content"):
+                        content.append(d["content"])
+                    if d.get("reasoning_content") or d.get("reasoning"):
+                        reasoning.append(d.get("reasoning_content") or d.get("reasoning"))
+            msg = {"content": "".join(content), "reasoning_content": "".join(reasoning)}
+        text, thought = _split_reasoning(msg)
+        return Completion(
+            content=text, reasoning=thought,
+            prompt_tokens=int(usage.get("prompt_tokens", 0)),
+            completion_tokens=int(usage.get("completion_tokens", 0)),
+            latency_s=round(time.monotonic() - t0, 3), model=model,
+            reasoning_tokens=int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0),
+        )
 
     def list_models(self) -> list[str]:
         r = self._client.get(f"{self.base_url}/models", headers={"Authorization": f"Bearer {self.api_key}"})
