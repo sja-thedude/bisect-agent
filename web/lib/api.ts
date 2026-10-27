@@ -17,7 +17,7 @@ export type Tier = "reason" | "fast";
 export interface CallRecord {
   task: string; tier: Tier; model: string; latency_s: number;
   prompt_tokens: number; completion_tokens: number; ok: boolean; started_at: number; error: string; context: string;
-  cost_usd?: number;
+  cost_usd?: number; reasoning_tokens?: number;
 }
 
 export interface Step {
@@ -48,7 +48,7 @@ export interface RunState {
     confidence?: string; citations?: string[] };
   fix: { diff?: string; rationale?: string; applied?: boolean; apply_error?: string; verdict?: string; attempt?: number; fallback?: string;
     attempts?: { attempt: number; result: string; detail?: string }[];
-    verification?: { repro_passes: boolean; new_failures: string[];
+    verification?: { repro_passes: boolean; new_failures: string[]; suite_available?: boolean;
       baseline: { status: string; total: number; failing: number; duration_s: number };
       patched: { status: string; total: number; failing: number; duration_s: number } } };
   counterfactual: { status?: "confirmed" | "not_confirmed" | "inconclusive" | "conflict" | "install_failed" | "error"; pytest?: string;
