@@ -374,9 +374,12 @@ class Agent:
     def _classify(self, run: TestRun) -> tuple[str, str, CallRecord | None]:
         """Cheap tier reads the pytest output; hard evidence overrides it when they disagree."""
         st = self.state
-        user = (f"BUG SYMPTOM: {st.repro.get('symptom', '')}\n\nREFERENCE FAILURE AT HEAD:\n"
-                f"{st.head_run.get('output_tail', '')[-2500:]}\n\nTHIS COMMIT ({run.sha[:10]}): pytest status={run.status}, "
-                f"exit={run.exit_code}\n{run.output_tail[-3500:]}")
+        per_test = ", ".join(f"{_case_name(c.nodeid)}={c.outcome}" for c in run.cases) or "none collected"
+        user = (f"RESULT AT THIS COMMIT ({run.sha[:10]}): pytest status={run.status.upper()} (exit {run.exit_code}); "
+                f"tests: {per_test}\n\nOUTPUT AT THIS COMMIT:\n{run.output_tail[-3000:]}\n\n"
+                f"BUG SYMPTOM: {st.repro.get('symptom', '')}\n\n"
+                f"FOR COMPARISON ONLY - the failure seen at HEAD, a different commit:\n"
+                f"{st.head_run.get('output_tail', '')[-2000:]}")
         verdict, reason, rec = None, "", None
         try:
             res = self.router.call("classify_verdict", prompts.CLASSIFY_VERDICT, user, json_out=True, context=run.sha)
@@ -822,48 +825,60 @@ class Agent:
         return dest, ""
 
     def _verify(self, patched: Path) -> None:
+        """Three sandbox runs in parallel: the reproduction test alone on HEAD+fix (the fix's own
+        verdict), and the project's full suite on HEAD and on HEAD+fix (to find new failures). If the
+        suite cannot even be collected at untouched HEAD, say so instead of blaming the fix."""
         st = self.state
         self.phase("verify")
-        self.log("Running the full test suite on HEAD and on HEAD+fix, plus the reproduction test.")
+        self.log("Running the reproduction test on HEAD+fix, and the full suite on HEAD and HEAD+fix, in parallel.")
         base = self.sandbox.snapshot(self.repo.path, st.bad_sha, self.snap_key)
         timeout = self.test_timeout()
 
-        def suite(snap: Path, inject: bool) -> TestRun:
+        def run(snap: Path, repro_only: bool) -> TestRun:
             key, ok = self._deps_key(snap)
             if not ok:
                 return TestRun(sha="", status="install_failed", exit_code=None, duration_s=0, output_tail="")
-            return self.sandbox.run_pytest(snap, st.bad_sha, key,
-                                           inject={st.repro["path"]: st.repro["code"]} if inject else None,
-                                           timeout_s=timeout)
+            if repro_only:
+                return self.sandbox.run_pytest(snap, st.bad_sha, key, inject={st.repro["path"]: st.repro["code"]},
+                                               targets=[st.repro["path"]], timeout_s=timeout)
+            return self.sandbox.run_pytest(snap, st.bad_sha, key, timeout_s=timeout)
 
-        with cf.ThreadPoolExecutor(max_workers=2) as ex:
-            f_base = ex.submit(suite, base, False)
-            f_fix = ex.submit(suite, patched, True)
-            baseline, fixed = f_base.result(), f_fix.result()
+        with cf.ThreadPoolExecutor(max_workers=3) as ex:
+            f_repro, f_base, f_fix = ex.submit(run, patched, True), ex.submit(run, base, False), ex.submit(run, patched, False)
+            repro, baseline, fixed = f_repro.result(), f_base.result(), f_fix.result()
 
-        def failing(run: TestRun) -> set[str]:
-            return {c.nodeid for c in run.cases if c.outcome in ("failed", "error")}
+        def failing(r: TestRun) -> set[str]:
+            return {c.nodeid for c in r.cases if c.outcome in ("failed", "error")}
 
-        repro_cases = [c for c in fixed.cases if REPRO_NAME.removesuffix(".py") in c.nodeid]
-        repro_passes = bool(repro_cases) and all(c.outcome == "passed" for c in repro_cases)
-        new_failures = sorted(failing(fixed) - failing(baseline) - {c.nodeid for c in repro_cases})
+        repro_passes = repro.status == "passed"
+        # A suite that errors during collection at untouched HEAD (e.g. it needs the package pip-installed
+        # for entry points) can't judge the fix; don't count its errors against it.
+        suite_ok = baseline.status in ("passed", "failed") and bool(baseline.cases)
+        new_failures = sorted(failing(fixed) - failing(baseline)) if suite_ok else []
         st.fix["verification"] = {
             "repro_passes": repro_passes,
+            "suite_available": suite_ok,
             "baseline": {"status": baseline.status, "total": len(baseline.cases), "failing": len(failing(baseline)),
                          "duration_s": baseline.duration_s},
             "patched": {"status": fixed.status, "total": len(fixed.cases), "failing": len(failing(fixed)),
                         "duration_s": fixed.duration_s},
             "new_failures": new_failures[:30],
-            "output_tail": fixed.output_tail[-3000:],
+            "output_tail": (fixed if suite_ok else baseline).output_tail[-3000:],
         }
         ok_label = "Revert verified" if st.fix.get("fallback") == "revert" else "Fix verified"
-        verdict = (ok_label if repro_passes and not new_failures else
-                   "Fix needs work" if not repro_passes else "Fix introduces new failures")
+        if not repro_passes:
+            verdict = "Fix needs work"
+        elif not suite_ok:
+            verdict = f"{ok_label} (reproduction only)"
+        elif new_failures:
+            verdict = ("Revert" if st.fix.get("fallback") == "revert" else "Fix") + " introduces new failures"
+        else:
+            verdict = ok_label
         st.fix["verdict"] = verdict
-        self.log(f"{verdict}: reproduction {'passes' if repro_passes else 'still fails'}, "
-                 f"{len(new_failures)} new failures across {len(fixed.cases)} tests.")
+        suite_note = (f"{len(new_failures)} new failures across {len(fixed.cases)} tests" if suite_ok else
+                      f"the project's own suite could not run at untouched HEAD either ({baseline.status})")
+        self.log(f"{verdict}: reproduction {'passes' if repro_passes else 'still fails'}; {suite_note}.")
         self.emit("verification", **st.fix["verification"], verdict=verdict)
-
 
 def _replace_once(text: str, find: str, replace: str) -> str | None:
     """Replace a snippet that occurs exactly once; tolerate trailing-whitespace and

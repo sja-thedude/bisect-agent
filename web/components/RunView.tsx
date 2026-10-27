@@ -149,9 +149,10 @@ function StepsTable({ steps, pending }: { steps: Step[]; pending: { index: numbe
 
 function ModelPanel({ calls, economics }: { calls: CallRecord[]; economics: RunState["economics"] }) {
   const totals = useMemo(() => {
-    const t: Record<string, { model: string; calls: number; pin: number; pout: number; lat: number; cost: number }> = {};
+    const t: Record<string, { model: string; calls: number; pin: number; pout: number; lat: number; cost: number; think: number }> = {};
     for (const c of calls) {
-      const x = (t[c.tier] ??= { model: c.model, calls: 0, pin: 0, pout: 0, lat: 0, cost: 0 });
+      const x = (t[c.tier] ??= { model: c.model, calls: 0, pin: 0, pout: 0, lat: 0, cost: 0, think: 0 });
+      x.think += c.reasoning_tokens ?? 0;
       x.calls++; x.pin += c.prompt_tokens; x.pout += c.completion_tokens; x.lat += c.latency_s; x.cost += c.cost_usd ?? 0;
     }
     return t;
@@ -184,7 +185,12 @@ function ModelPanel({ calls, economics }: { calls: CallRecord[]; economics: RunS
               <div><div className="font-mono text-lg text-ink">{t ? ((t.pin + t.pout) / 1000).toFixed(1) + "k" : "0"}</div><div className="text-[10.5px] uppercase text-muted">tokens</div></div>
               <div><div className="font-mono text-lg text-ink">{t && t.calls ? (t.lat / t.calls).toFixed(1) + "s" : "—"}</div><div className="text-[10.5px] uppercase text-muted">avg latency</div></div>
             </div>
-            {t && <div className="mt-1.5 text-right font-mono text-[11px] text-muted">{usd(t.cost)}</div>}
+            {t && (
+              <div className="mt-1.5 flex justify-between font-mono text-[11px] text-muted">
+                <span>{t.think > 0 ? `${(t.think / 1000).toFixed(1)}k thinking tokens` : tier === "fast" ? "thinking off" : ""}</span>
+                <span>{usd(t.cost)}</span>
+              </div>
+            )}
           </div>
         );
       })}
@@ -384,7 +390,7 @@ function ReportCard({ st }: { st: RunState }) {
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h4 className="text-[11px] font-semibold uppercase tracking-widest text-muted">Proposed fix <TierChip tier="reason" /></h4>
             {st.fix.verdict && (
-              <span className={`rounded-full px-2.5 py-1 text-[12px] font-semibold ring-1 ${st.fix.verdict?.endsWith("verified") ? "bg-good/10 text-good ring-good/40" : "bg-skip/10 text-skip ring-skip/40"}`}>{st.fix.verdict}</span>
+              <span className={`rounded-full px-2.5 py-1 text-[12px] font-semibold ring-1 ${st.fix.verdict?.includes("verified") ? "bg-good/10 text-good ring-good/40" : "bg-skip/10 text-skip ring-skip/40"}`}>{st.fix.verdict}</span>
             )}
           </div>
           {st.fix.rationale && <p className="mb-3 text-[13.5px] text-ink/90">{st.fix.rationale}</p>}
@@ -401,8 +407,14 @@ function ReportCard({ st }: { st: RunState }) {
           {v && (
             <div className="mt-4 grid gap-3 sm:grid-cols-3">
               <Stat label="Reproduction test" value={v.repro_passes ? "passes" : "still fails"} tone={v.repro_passes ? "good" : "bad"} />
-              <Stat label="Full suite at HEAD" value={`${v.baseline.total - v.baseline.failing}/${v.baseline.total} pass`} tone="muted" />
-              <Stat label="Full suite with fix" value={`${v.patched.total - v.patched.failing}/${v.patched.total} pass · ${v.new_failures.length} new failures`} tone={v.new_failures.length ? "bad" : "good"} />
+              {v.suite_available === false ? (
+                <div className="sm:col-span-2"><Stat label="Project test suite" value={`can't run in the sandbox even at untouched HEAD (${v.baseline.status}); fix judged by the reproduction test`} tone="muted" /></div>
+              ) : (
+                <>
+                  <Stat label="Full suite at HEAD" value={`${v.baseline.total - v.baseline.failing}/${v.baseline.total} pass`} tone="muted" />
+                  <Stat label="Full suite with fix" value={`${v.patched.total - v.patched.failing}/${v.patched.total} pass · ${v.new_failures.length} new failures`} tone={v.new_failures.length ? "bad" : "good"} />
+                </>
+              )}
             </div>
           )}
           {!!v?.new_failures.length && <ul className="mt-2 font-mono text-[11.5px] text-bad">{v.new_failures.map((f) => <li key={f}>{f}</li>)}</ul>}

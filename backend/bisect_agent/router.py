@@ -86,6 +86,7 @@ class CallRecord:
     error: str = ""
     context: str = ""  # e.g. the commit sha this call was about
     cost_usd: float = 0.0
+    reasoning_tokens: int = 0  # part of completion_tokens spent thinking
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -158,6 +159,7 @@ class Router:
             ok=not err, started_at=started, error=err[:300], context=context,
         )
         rec.cost_usd = round(cost_usd(tier, rec.prompt_tokens, rec.completion_tokens), 6)
+        rec.reasoning_tokens = comp.reasoning_tokens if comp else 0
         with self._lock:
             self.calls.append(rec)
         for fn in self._listeners:
@@ -170,7 +172,8 @@ class Router:
         out: dict[str, dict] = {}
         for c in self.calls:
             t = out.setdefault(c.tier, {"model": c.model, "calls": 0, "prompt_tokens": 0,
-                                        "completion_tokens": 0, "latency_s": 0.0, "cost_usd": 0.0})
+                                        "completion_tokens": 0, "reasoning_tokens": 0, "latency_s": 0.0, "cost_usd": 0.0})
+            t["reasoning_tokens"] += c.reasoning_tokens
             t["calls"] += 1
             t["cost_usd"] = round(t["cost_usd"] + c.cost_usd, 6)
             t["prompt_tokens"] += c.prompt_tokens
