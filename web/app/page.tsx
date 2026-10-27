@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { Config, getJSON, postJSON, repoName, RunSummary, short } from "@/lib/api";
+import { Config, getJSON, LIVE_URL, postJSON, repoName, RunSummary, short, STATIC } from "@/lib/api";
 import { RunView, TierChip } from "@/components/RunView";
 
 function useRunParam(): [string | null, (id: string | null) => void] {
@@ -102,11 +102,16 @@ function RunForm({ config, onStarted }: { config: Config | null; onStarted: (id:
       {err && <p className="rounded-lg border border-bad/40 bg-bad/5 px-3 py-2 text-[13px] text-bad">{err}</p>}
       <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
         <p className="text-[11.5px] text-muted">Every commit runs in a network-less, read-only Docker sandbox. Limits: 15 bisect steps, 5 min per test, 25 min per job.</p>
-        <button disabled={busy || (config ? !config.nebius_configured : false)} className="rounded-lg bg-nv px-4 py-2 text-[14px] font-semibold text-black hover:bg-[#8ad100] disabled:opacity-50">
+        <button disabled={busy || STATIC || (config ? !config.nebius_configured : false)} className="rounded-lg bg-nv px-4 py-2 text-[14px] font-semibold text-black hover:bg-[#8ad100] disabled:opacity-50">
           {busy ? "Starting…" : "Start bisect"}
         </button>
       </div>
-      {config && !config.nebius_configured && <p className="text-[12px] text-skip">This server has no Token Factory key configured, so new runs are disabled. The demo runs below still work.</p>}
+      {STATIC ? (
+        <p className="text-[12px] text-skip">
+          Static demo: the verified runs below replay exactly as recorded, including every Nemotron call.{" "}
+          {LIVE_URL ? <>Start your own run on the <a className="underline" href={LIVE_URL}>live app</a>.</> : <>To hunt your own regression, run Bisect locally (see the README).</>}
+        </p>
+      ) : config && !config.nebius_configured && <p className="text-[12px] text-skip">This server has no Token Factory key configured, so new runs are disabled. The demo runs below still work.</p>}
     </form>
   );
 }

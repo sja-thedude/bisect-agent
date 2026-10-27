@@ -1,4 +1,16 @@
 export const API = process.env.NEXT_PUBLIC_API_BASE ?? "";
+/** Static demo build: no backend; verified runs are served from /demo/*.json and replayed in the browser. */
+export const STATIC = process.env.NEXT_PUBLIC_STATIC_DEMO === "1";
+/** Where the full app (live runs) is hosted, if anywhere. */
+export const LIVE_URL = process.env.NEXT_PUBLIC_LIVE_URL ?? "";
+
+function staticPath(path: string): string {
+  if (path === "/api/config") return "/demo/config.json";
+  if (path === "/api/runs") return "/demo/index.json";
+  const m = path.match(/^\/api\/runs\/([\w-]+)$/);
+  if (m) return `/demo/runs/${m[1]}.json`;
+  throw new Error("Not available in the static demo");
+}
 
 export type Tier = "reason" | "fast";
 
@@ -63,12 +75,19 @@ export interface Config {
 export interface RunEvent { seq: number; ts: number; kind: string; payload: any }
 
 export async function getJSON<T>(path: string): Promise<T> {
+  if (STATIC) {
+    const r = await fetch(staticPath(path));
+    if (!r.ok) throw new Error(r.status === 404 ? "run not found" : `HTTP ${r.status}`);
+    const data = await r.json();
+    return (path.startsWith("/api/runs/") ? { ...data.state, seed: true, title: data.title } : data) as T;
+  }
   const r = await fetch(API + path, { cache: "no-store" });
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail ?? `HTTP ${r.status}`);
   return r.json();
 }
 
 export async function postJSON<T>(path: string, body: unknown): Promise<T> {
+  if (STATIC) throw new Error(LIVE_URL ? `This is the static demo. Start live runs at ${LIVE_URL}` : "This is the static demo; live runs need the full app.");
   const r = await fetch(API + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail ?? `HTTP ${r.status}`));
