@@ -610,10 +610,10 @@ class Agent:
             return {"status": "install_failed", "detail": "dependencies for the reverted tree failed to install"}
         run = self.sandbox.run_pytest(patched, st.bad_sha, key, inject={st.repro["path"]: st.repro["code"]},
                                       targets=[st.repro["path"]], timeout_s=self.test_timeout())
-        status = "confirmed" if run.status == "passed" else "not_confirmed"
+        status = _counterfactual_status(run.status)
         if status == "confirmed":
             self._reverted = (patched, revert_diff)
-        self.log(f"Counterfactual {'CONFIRMED' if status == 'confirmed' else 'not confirmed'}: "
+        self.log(f"Counterfactual {status.upper().replace('_', ' ')}: "
                  f"HEAD minus {sha[:10]} -> pytest {run.status} ({run.duration_s}s).",
                  "info" if status == "confirmed" else "warn")
         return {"status": status, "pytest": run.status, "duration_s": run.duration_s, "partial": bool(skipped),
@@ -649,10 +649,10 @@ class Agent:
             return {"status": "install_failed", "detail": "dependencies for the reverted tree failed to install"}
         run = self.sandbox.run_pytest(patched, st.bad_sha, key, inject={st.repro["path"]: st.repro["code"]},
                                       targets=[st.repro["path"]], timeout_s=self.test_timeout())
-        status = "confirmed" if run.status == "passed" else "not_confirmed"
+        status = _counterfactual_status(run.status)
         if status == "confirmed":
             self._reverted = (patched, patch)
-        self.log(f"Counterfactual {'CONFIRMED' if status == 'confirmed' else 'not confirmed'} (revert resolved by the "
+        self.log(f"Counterfactual {status.upper().replace('_', ' ')} (revert resolved by the "
                  f"reasoning tier): HEAD minus {sha[:10]} -> pytest {run.status} ({run.duration_s}s).",
                  "info" if status == "confirmed" else "warn")
         return {"status": status, "pytest": run.status, "duration_s": run.duration_s, "method": "model_resolved",
@@ -884,13 +884,28 @@ def _replace_once(text: str, find: str, replace: str) -> str | None:
     return "\n".join(lines[:a] + replace.strip("\n").split("\n") + lines[b + 1:])
 
 
+_NON_BEHAVIOURAL = {"_version.py", "version.py", "__version__.py", "__about__.py", "_meta.py", "__meta__.py", "about.py"}
+
+
 def _is_code(path: str) -> bool:
-    """Behavioural source files. Version stamps are .py but never explain a regression."""
-    name = path.rsplit("/", 1)[-1]
-    return name.endswith((".py", ".pyx", ".pyi")) and name not in {"_version.py", "version.py", "__version__.py", "__about__.py"}
+    """Library source that can change behaviour. Version stamps, tests and conftest files are
+    Python too, but never explain a regression in the library itself."""
+    parts = path.split("/")
+    name = parts[-1]
+    if not name.endswith((".py", ".pyx", ".pyi")) or name in _NON_BEHAVIOURAL:
+        return False
+    is_test = (name.startswith("test_") or name.endswith("_test.py") or name == "conftest.py"
+               or any(p in ("tests", "test", "testing") for p in parts[:-1]))
+    return not is_test
 
 
 _TOKEN = re.compile(r"[^\s#]+")
+
+
+def _counterfactual_status(pytest_status: str) -> str:
+    """Only a clean assertion failure counts as evidence against causation; errors, timeouts
+    and install failures say nothing either way."""
+    return {"passed": "confirmed", "failed": "not_confirmed"}.get(pytest_status, "inconclusive")
 
 
 def _locate_lines(text: str, find: str) -> tuple[int, int] | None:

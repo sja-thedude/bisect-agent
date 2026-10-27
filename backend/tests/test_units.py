@@ -70,3 +70,12 @@ def test_edit_locator_survives_reformatting():
     out = _replace_once(head, find, "            pass")
     assert out is not None and out.strip() == "pass"
     assert _replace_once("a = 1\nb = 2\na = 1\n", "a = 1", "x") is None  # ambiguous: refuse
+
+
+def test_behavioural_file_classes():
+    from bisect_agent.agent import _counterfactual_status, _is_code
+    assert _is_code("pathspec/patterns/gitwildmatch.py")
+    for path in ("pathspec/_meta.py", "tests/test_gitwildmatch.py", "conftest.py", "src/pkg/_version.py", "CHANGES.rst"):
+        assert not _is_code(path), path
+    assert [_counterfactual_status(x) for x in ("passed", "failed", "error", "timeout")] == \
+        ["confirmed", "not_confirmed", "inconclusive", "inconclusive"]
