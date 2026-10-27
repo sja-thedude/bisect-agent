@@ -5,6 +5,7 @@ export type Tier = "reason" | "fast";
 export interface CallRecord {
   task: string; tier: Tier; model: string; latency_s: number;
   prompt_tokens: number; completion_tokens: number; ok: boolean; started_at: number; error: string; context: string;
+  cost_usd?: number;
 }
 
 export interface Step {
@@ -33,10 +34,15 @@ export interface RunState {
     findings?: { fact: string; url: string }[]; upstream_change?: string; skipped?: string; packages?: unknown[] };
   explanation: { headline?: string; what_changed?: string; causal_chain?: string[]; why_tests_missed_it?: string;
     confidence?: string; citations?: string[] };
-  fix: { diff?: string; rationale?: string; applied?: boolean; apply_error?: string; verdict?: string;
+  fix: { diff?: string; rationale?: string; applied?: boolean; apply_error?: string; verdict?: string; attempt?: number;
+    attempts?: { attempt: number; result: string; detail?: string }[];
     verification?: { repro_passes: boolean; new_failures: string[];
       baseline: { status: string; total: number; failing: number; duration_s: number };
       patched: { status: string; total: number; failing: number; duration_s: number } } };
+  counterfactual: { status?: "confirmed" | "not_confirmed" | "conflict" | "install_failed" | "error"; pytest?: string;
+    duration_s?: number; partial?: boolean; skipped_files?: string[]; detail?: string };
+  economics: { actual_usd?: number; all_reason_usd?: number; saved_pct?: number; fast_share_of_calls?: number };
+  range_commits: { sha: string }[];
   limits_hit: string[]; calls: CallRecord[];
   model_totals: Record<string, { model: string; calls: number; prompt_tokens: number; completion_tokens: number; latency_s: number }>;
   created_at: number; finished_at: number; seed?: boolean; title?: string;
@@ -71,4 +77,6 @@ export async function postJSON<T>(path: string, body: unknown): Promise<T> {
 
 export const short = (sha?: string | null) => (sha ? sha.slice(0, 10) : "");
 export const repoName = (url: string) => url.replace(/^https?:\/\/[^/]+\//, "").replace(/\.git$/, "");
+export const usd = (n?: number) => (n == null ? "—" : n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(3)}`);
+
 export const tierLabel = (t: string) => (t === "reason" ? "Ultra" : t === "fast" ? "Nano" : t);

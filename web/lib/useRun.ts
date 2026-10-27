@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { API, getJSON, RunEvent, RunState } from "./api";
 
 const REFRESH_KINDS = new Set(["phase", "step", "repro", "repro_confirmed", "first_bad", "explanation", "fix",
-  "verification", "report", "research", "research_decision", "end"]);
+  "verification", "report", "research", "research_decision", "counterfactual", "end"]);
 
 /** Follows a run: recorded events stream over SSE (live runs tail, finished runs replay instantly
  *  or paced with `speed`), and the full state is refetched whenever something structural changes. */
@@ -42,7 +42,7 @@ export function useRun(id: string | null, speed: number, nonce: number) {
       if (speed > 0 && ev.kind === "report") setState(ev.payload.state);
     };
     const kinds = ["log", "phase", "call", "step", "step_start", "repro", "repro_confirmed", "first_bad", "explanation",
-      "fix", "verification", "report", "search", "research", "research_decision"];
+      "fix", "verification", "report", "search", "research", "research_decision", "range", "counterfactual"];
     kinds.forEach((k) => es.addEventListener(k, onAny as EventListener));
     es.addEventListener("end", () => { es.close(); setStreaming(false); refresh(); });
     es.onerror = () => { if (es.readyState === EventSource.CLOSED) setStreaming(false); };
