@@ -40,7 +40,7 @@ export interface RunState {
       baseline: { status: string; total: number; failing: number; duration_s: number };
       patched: { status: string; total: number; failing: number; duration_s: number } } };
   counterfactual: { status?: "confirmed" | "not_confirmed" | "conflict" | "install_failed" | "error"; pytest?: string;
-    duration_s?: number; partial?: boolean; skipped_files?: string[]; detail?: string };
+    duration_s?: number; partial?: boolean; skipped_files?: string[]; detail?: string; method?: "git_revert" | "model_resolved" };
   economics: { actual_usd?: number; all_reason_usd?: number; saved_pct?: number; fast_share_of_calls?: number };
   range_commits: { sha: string }[];
   limits_hit: string[]; calls: CallRecord[];

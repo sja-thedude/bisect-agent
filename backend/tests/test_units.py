@@ -52,3 +52,21 @@ diff --git a/pyproject.toml b/pyproject.toml
         {"package": "chardet", "old": ">=3.0.2,<5", "new": ">=3.0.2,<6"},
         {"package": "urllib3", "old": "==1.26.18", "new": "==2.0.0"},
     ]
+
+
+def test_edit_locator_survives_reformatting():
+    from bisect_agent.agent import _replace_once
+    head = ("            elif (ttype not in (T.Whitespace, T.Comment.Single,\n"
+            "                                T.Comment.Multiline)\n"
+            "                  and not (ttype is T.Keyword)):\n"
+            "                # Reset if we see a non-whitespace, non-comment\n"
+            "                # token\n"
+            "                self._seen_begin = False\n")
+    # Same code as it looked before a later "code cleanup" re-wrapped it.
+    find = ("            elif (ttype not in (T.Whitespace, T.Comment.Single, T.Comment.Multiline)\n"
+            "                  and not (ttype is T.Keyword)):\n"
+            "                # Reset if we see a non-whitespace, non-comment token\n"
+            "                self._seen_begin = False")
+    out = _replace_once(head, find, "            pass")
+    assert out is not None and out.strip() == "pass"
+    assert _replace_once("a = 1\nb = 2\na = 1\n", "a = 1", "x") is None  # ambiguous: refuse

@@ -212,7 +212,7 @@ function CausalProof({ st }: { st: RunState }) {
   const sha = short(st.first_bad.sha);
   const ok = c.status === "confirmed";
   const text = ok
-    ? <>Reverting <span className="font-mono">{sha}</span> alone on today&apos;s HEAD makes the reproduction test <b>pass</b>{c.partial ? <> (partial revert; left {c.skipped_files?.join(", ")} untouched)</> : null}. This commit is why the bug exists now, not just where it started.</>
+    ? <>Reverting <span className="font-mono">{sha}</span> alone on today&apos;s HEAD makes the reproduction test <b>pass</b>{c.partial ? <> (partial revert; left {c.skipped_files?.join(", ")} untouched)</> : null}. This commit is why the bug exists now, not just where it started.{c.method === "model_resolved" && <> <span className="text-muted">(git revert conflicted with later reformatting; the reasoning tier resolved the revert against HEAD, and the sandbox ran the test.)</span></>}</>
     : c.status === "not_confirmed"
       ? <>Reverting <span className="font-mono">{sha}</span> on HEAD does not make the test pass ({c.pytest}): later commits also contribute.</>
       : c.status === "conflict"

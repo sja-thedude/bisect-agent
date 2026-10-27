@@ -98,9 +98,21 @@ code to work with the new version where reasonable; pin or constrain the depende
 
 Express the fix as exact search-and-replace edits on the HEAD files:
 - "path": repository-relative path of an existing file shown to you.
-- "find": a snippet copied VERBATIM from that HEAD file (same indentation and whitespace), 2 to 15 lines long,
-  that occurs EXACTLY ONCE in the file.
+- "find": a snippet copied VERBATIM from that file as shown under HEAD FILES (same indentation, line breaks and
+  whitespace), 2 to 15 lines long, that occurs EXACTLY ONCE in the file. Never copy it from the culprit diff:
+  the code may have been reformatted since that commit.
 - "replace": the new text for that snippet.
 Do not modify or add the reproduction test.
 Reply with JSON only:
 {"edits": [{"path": "...", "find": "...", "replace": "..."}], "rationale": "<two or three sentences>"}"""
+
+RESOLVE_REVERT = """You perform `git revert` by hand. A commit's changes must be undone on top of the current HEAD,
+but later commits reformatted or edited the same lines, so git's automatic revert conflicts.
+Undo exactly the behavioural changes the commit introduced, adapted to the code as it is at HEAD. Do not fix anything
+else, do not improve the code, and keep unrelated later changes (formatting, renames) intact.
+
+Express the revert as exact search-and-replace edits on the HEAD files:
+- "path": repository-relative path of a file shown under HEAD FILES.
+- "find": a snippet copied VERBATIM from that file as shown under HEAD FILES, 2 to 15 lines, occurring exactly once.
+- "replace": the new text.
+Reply with JSON only: {"edits": [{"path": "...", "find": "...", "replace": "..."}], "rationale": "<one sentence>"}"""

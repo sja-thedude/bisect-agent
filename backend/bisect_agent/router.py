@@ -63,6 +63,7 @@ ROUTES: dict[str, Tier] = {
     "explain_culprit": Tier.REASON,
     "decide_upstream_research": Tier.REASON,
     "propose_fix": Tier.REASON,
+    "resolve_revert": Tier.REASON,
     "classify_verdict": Tier.FAST,
     "summarise_diff": Tier.FAST,
     "filter_candidates": Tier.FAST,
