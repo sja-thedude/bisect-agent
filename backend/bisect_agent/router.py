@@ -52,8 +52,8 @@ def cost_usd(tier: Tier, prompt_tokens: int, completion_tokens: int) -> float:
 
 # Per-tier generation settings.
 TIER_PARAMS: dict[Tier, dict[str, Any]] = {
-    Tier.REASON: {"thinking": True, "max_tokens": 24000, "temperature": 0.2},
-    Tier.FAST: {"thinking": False, "max_tokens": 1200, "temperature": 0.0},
+    Tier.REASON: {"thinking": True, "max_tokens": 16000, "temperature": 0.2, "deadline_s": 240.0, "retries": 2},
+    Tier.FAST: {"thinking": False, "max_tokens": 1200, "temperature": 0.0, "deadline_s": 45.0, "retries": 3},
 }
 
 # Every task the agent performs, and the tier it is routed to. Adding a task means adding a row here.
