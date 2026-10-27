@@ -205,6 +205,7 @@ class Agent:
         # Each job gets its own bare clone sharing objects with the cache, so concurrent
         # jobs on the same repo never fight over git bisect state.
         job_dir = self.s.data_dir / "jobs" / st.id / "repo.git"
+        shutil.rmtree(job_dir.parent, ignore_errors=True)  # left behind if a previous run with this id was killed
         job_dir.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "clone", "--quiet", "--bare", "--shared", str(cache.path), str(job_dir)],
                        check=True, capture_output=True)
