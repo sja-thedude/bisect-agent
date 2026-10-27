@@ -27,6 +27,7 @@ class Completion:
     completion_tokens: int
     latency_s: float
     model: str
+    reasoning_tokens: int = 0
 
 
 _THINK = re.compile(r"<think>(.*?)</think>", re.S)
@@ -98,6 +99,7 @@ class TokenFactory:
                         prompt_tokens=int(usage.get("prompt_tokens", 0)),
                         completion_tokens=int(usage.get("completion_tokens", 0)),
                         latency_s=round(time.monotonic() - t0, 3), model=data.get("model", model),
+                        reasoning_tokens=int((usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0),
                     )
                 last = f"HTTP {r.status_code}: {r.text[:500]}"
                 if r.status_code == 429:

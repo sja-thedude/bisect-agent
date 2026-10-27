@@ -24,6 +24,9 @@ inside a sandbox with NO network access. It must therefore:
   messages that state the expected vs actual behaviour. The agent keeps whichever candidates reproduce the bug.
 - Not rely on the repository's conftest fixtures (they change over history).
 
+Import the package at module level, but import anything version-sensitive (submodules, classes, helpers that may
+not exist in older releases) INSIDE each test function, so a missing API only affects that one candidate.
+
 The repository root and its `src/` directory are on PYTHONPATH; the package is NOT pip-installed, so avoid
 importlib.metadata lookups of the package's own version.
 
@@ -47,6 +50,8 @@ all earlier attempts. Write THREE new candidates named test_repro_1..3 that lear
 Reply with JSON only: {"test_code": "...", "rationale": "...", "symptom": "..."}"""
 
 CLASSIFY_VERDICT = """You classify one step of a git bisect. A reproduction test was run with pytest at a commit.
+The first line gives that commit's pytest result. Judge THIS commit's result; the HEAD failure at the end is only
+a reference for what the bug looks like. If this commit's status is PASSED, the verdict is "good".
 Decide what this commit tells us about the bug:
 - "bad": the reproduction test FAILED and the failure shows the same wrong behaviour as the reference failure at HEAD
   (same assertion and essentially the same symptom; exact values may differ slightly).
