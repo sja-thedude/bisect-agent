@@ -151,6 +151,21 @@ class Repo:
             return None
         return proc.stdout.decode(errors="replace")[:max_chars]
 
+    def revert_tree(self, head: str, sha: str) -> tuple[str | None, str]:
+        """`git revert <sha>` on top of `head`, computed as a 3-way merge entirely in the object
+        store (no work tree, nothing executes). Returns (tree id, "") or (None, conflict summary)."""
+        proc = subprocess.run(
+            ["git", "-C", str(self.path), "merge-tree", "--write-tree", "--name-only", "--no-messages",
+             f"--merge-base={sha}", head, f"{sha}^"],
+            capture_output=True, text=True, timeout=120, env=_GIT_ENV,
+        )
+        lines = proc.stdout.strip().splitlines()
+        if proc.returncode == 0 and lines:
+            return lines[0], ""
+        if proc.returncode == 1:
+            return None, "conflicts in: " + ", ".join(lines[1:][:10])
+        return None, (proc.stderr or proc.stdout).strip()[-300:]
+
     def tree(self, sha: str) -> list[str]:
         return self.git("ls-tree", "-r", "--name-only", sha).splitlines()
 

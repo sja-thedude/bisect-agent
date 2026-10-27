@@ -38,6 +38,18 @@ MODELS: dict[Tier, str] = {
     Tier.FAST: os.environ.get("BISECT_MODEL_FAST", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"),
 }
 
+# Token Factory list prices, USD per 1M tokens (input, output), from the public model catalog.
+PRICES: dict[Tier, tuple[float, float]] = {
+    Tier.REASON: (float(os.environ.get("BISECT_PRICE_REASON_IN", 1.0)), float(os.environ.get("BISECT_PRICE_REASON_OUT", 3.0))),
+    Tier.FAST: (float(os.environ.get("BISECT_PRICE_FAST_IN", 0.06)), float(os.environ.get("BISECT_PRICE_FAST_OUT", 0.24))),
+}
+
+
+def cost_usd(tier: Tier, prompt_tokens: int, completion_tokens: int) -> float:
+    pin, pout = PRICES[tier]
+    return (prompt_tokens * pin + completion_tokens * pout) / 1_000_000
+
+
 # Per-tier generation settings.
 TIER_PARAMS: dict[Tier, dict[str, Any]] = {
     Tier.REASON: {"thinking": True, "max_tokens": 24000, "temperature": 0.2},
@@ -72,6 +84,7 @@ class CallRecord:
     started_at: float
     error: str = ""
     context: str = ""  # e.g. the commit sha this call was about
+    cost_usd: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -143,6 +156,7 @@ class Router:
             completion_tokens=comp.completion_tokens if comp else 0,
             ok=not err, started_at=started, error=err[:300], context=context,
         )
+        rec.cost_usd = round(cost_usd(tier, rec.prompt_tokens, rec.completion_tokens), 6)
         with self._lock:
             self.calls.append(rec)
         for fn in self._listeners:
@@ -155,12 +169,27 @@ class Router:
         out: dict[str, dict] = {}
         for c in self.calls:
             t = out.setdefault(c.tier, {"model": c.model, "calls": 0, "prompt_tokens": 0,
-                                        "completion_tokens": 0, "latency_s": 0.0})
+                                        "completion_tokens": 0, "latency_s": 0.0, "cost_usd": 0.0})
             t["calls"] += 1
+            t["cost_usd"] = round(t["cost_usd"] + c.cost_usd, 6)
             t["prompt_tokens"] += c.prompt_tokens
             t["completion_tokens"] += c.completion_tokens
             t["latency_s"] = round(t["latency_s"] + c.latency_s, 3)
         return out
+
+
+def economics(calls: list[dict]) -> dict:
+    """What the routing decision saved: actual spend vs. the same token volume billed at Ultra
+    prices (a lower bound, since Ultra with thinking on would also emit more tokens)."""
+    actual = sum(c.get("cost_usd", 0.0) for c in calls)
+    all_reason = sum(cost_usd(Tier.REASON, c["prompt_tokens"], c["completion_tokens"]) for c in calls)
+    fast = [c for c in calls if c["tier"] == Tier.FAST.value]
+    return {
+        "actual_usd": round(actual, 5),
+        "all_reason_usd": round(all_reason, 5),
+        "saved_pct": round(100 * (1 - actual / all_reason), 1) if all_reason else 0.0,
+        "fast_share_of_calls": round(len(fast) / len(calls), 3) if calls else 0.0,
+    }
 
 
 def parse_json(text: str) -> Any:

@@ -10,3 +10,6 @@ web/.next/
 web/out/
 .pytest_cache/
 .DS_Store
+
+# local run data
+backend/data/

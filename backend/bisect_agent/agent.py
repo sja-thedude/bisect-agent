@@ -10,6 +10,7 @@ Any phase can end the job early with partial findings when a hard limit is hit.
 from __future__ import annotations
 
 import concurrent.futures as cf
+import difflib
 import os
 import re
 import shutil
@@ -26,7 +27,7 @@ from . import prompts
 from .config import Settings
 from .gitops import BisectSession, Repo, repo_slug, touches_dependencies, validate_repo_url, web_commit_url
 from .nebius import InferenceError
-from .router import CallRecord, Router
+from .router import CallRecord, Router, economics
 from .sandbox import SUPPORTED_PYTHONS, Sandbox, SandboxError, TestRun
 from .tavily import Tavily, parse_dependency_changes
 
@@ -91,6 +92,9 @@ class JobState:
     limits_hit: list[str] = field(default_factory=list)
     calls: list[dict] = field(default_factory=list)
     model_totals: dict = field(default_factory=dict)
+    economics: dict = field(default_factory=dict)
+    counterfactual: dict = field(default_factory=dict)
+    range_commits: list[dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     finished_at: float = 0.0
 
@@ -140,6 +144,7 @@ class Agent:
     def _on_call(self, rec: CallRecord) -> None:
         self.state.calls.append(rec.to_dict())
         self.state.model_totals = self.router.totals()
+        self.state.economics = economics(self.state.calls)
         self.emit("call", **rec.to_dict())
 
     def remaining(self) -> float:
@@ -404,6 +409,13 @@ class Agent:
         self.phase("bisect")
         session = BisectSession(self.repo)
         status = session.start(st.bad_sha, st.good_sha)
+        shas = self.repo.git("rev-list", "--reverse", "--topo-order", st.bad_sha, f"^{st.good_sha}", "--",
+                             *session.pathspec).split()
+        st.range_commits = [{"sha": c} for c in shas[-400:]]
+        self.emit("range", good=st.good_sha, bad=st.bad_sha, commits=[c["sha"] for c in st.range_commits],
+                  filtered_out=st.range_size - len(shas))
+        if st.range_size - len(shas) > 0:
+            self.log(f"Pathspec filter: {st.range_size - len(shas)} docs/CI-only commits excluded from the bisect.")
         # Seed the cache with the two runs we already have.
         results: dict[str, cf.Future] = {}
         for sha, d in ((st.bad_sha, st.head_run), (st.good_sha, st.good_run)):
@@ -447,6 +459,8 @@ class Agent:
             self._record_partial_range(session)
             raise
         finally:
+            for f in results.values():
+                f.cancel()  # speculative runs git never asked for
             bisect_log = session.log()
             session.reset()
             st.repro["bisect_log"] = bisect_log
@@ -515,6 +529,9 @@ class Agent:
         dep_changes = parse_dependency_changes(diff) if st.first_bad.get("dependency_files") else []
         st.first_bad["dependency_changes"] = dep_changes
 
+        cf_pool = cf.ThreadPoolExecutor(max_workers=1)
+        counterfactual_f = cf_pool.submit(self._counterfactual)
+        cf_pool.shutdown(wait=False)
         findings_text = ""
         if st.first_bad.get("dependency_files"):
             # The agent decides for itself whether the repo's history is enough to explain the break.
@@ -534,6 +551,19 @@ class Agent:
             st.research["decision"] = {"needs_upstream_research": False,
                                        "reason": "The first bad commit does not touch any dependency files."}
 
+        try:
+            st.counterfactual = counterfactual_f.result(timeout=max(1, self.remaining()))
+        except Exception as e:  # noqa: BLE001 - the proof is extra evidence, never fatal
+            st.counterfactual = {"status": "error", "detail": str(e)[:300]}
+        self.emit("counterfactual", **st.counterfactual)
+        if st.phase != "explain":
+            self.phase("explain")
+        cf_text = {
+            "confirmed": "COUNTERFACTUAL CHECK: reverting ONLY this commit on top of HEAD makes the reproduction test "
+                         "pass. The commit is causally responsible, not merely the first failing point.",
+            "not_confirmed": "COUNTERFACTUAL CHECK: reverting this commit on HEAD does NOT make the test pass, so later "
+                             "commits also contribute. Say so in the explanation.",
+        }.get(st.counterfactual.get("status"), "")
         parent = st.first_bad["sha"] + "^"
         self.log("Explaining the culprit commit with the reasoning tier.")
         culprit_run = next((s for s in st.steps if s.sha == sha), None)
@@ -541,10 +571,44 @@ class Agent:
                 f"FIRST BAD COMMIT: {sha} {st.first_bad['subject']}\nPytest at first bad commit: "
                 f"{culprit_run.status if culprit_run else 'failed'}\nReference failure output:\n"
                 f"{st.head_run.get('output_tail', '')[-3000:]}\n\nPARENT {parent}: test passed.\n\n"
-                f"{findings_text}\n\nDIFF OF FIRST BAD COMMIT:\n{diff}")
+                f"{cf_text}\n\n{findings_text}\n\nDIFF OF FIRST BAD COMMIT:\n{diff}")
         res = self.router.call("explain_culprit", prompts.EXPLAIN_CULPRIT, user, json_out=True, context=sha)
         st.explanation = res.data or {}
         self.emit("explanation", **st.explanation)
+
+    def _counterfactual(self) -> dict:
+        """Causal proof: revert ONLY the culprit on top of HEAD and rerun the reproduction test.
+        Bisect shows where the test starts failing; this shows that the commit is why it fails today."""
+        st = self.state
+        sha = st.first_bad["sha"]
+        self.log(f"Counterfactual: reverting {sha[:10]} alone on top of HEAD and re-running the test.")
+        tree, err = self.repo.revert_tree(st.bad_sha, sha)
+        skipped: list[str] = []
+        if tree:
+            patched = self.sandbox.snapshot(self.repo.path, tree, self.snap_key + "-reverts")
+        else:
+            # Later commits changed some of the same files (often version or changelog files).
+            # Revert the culprit's changes to every other file and say which were left alone.
+            skipped = [f.strip() for f in err.removeprefix("conflicts in:").split(",") if f.strip()]
+            keep = [f for f in self.repo.changed_files(sha) if f not in skipped]
+            reverse = self.repo.git("diff", "--binary", sha, f"{sha}^", "--", *keep) if keep else ""
+            patched, apply_err = self._apply_patch(reverse, "reverted") if reverse else (None, "nothing left to revert")
+            if not patched:
+                self.log("Counterfactual: the culprit no longer reverts on HEAD (later commits changed the same lines).")
+                return {"status": "conflict", "detail": (err + " " + apply_err)[:400]}
+            self.log(f"Counterfactual: full revert conflicts in {', '.join(skipped)}; reverting the other "
+                     f"{len(keep)} file(s) of the culprit.")
+        key, ok = self._deps_key(patched)
+        if not ok:
+            return {"status": "install_failed", "detail": "dependencies for the reverted tree failed to install"}
+        run = self.sandbox.run_pytest(patched, st.bad_sha, key, inject={st.repro["path"]: st.repro["code"]},
+                                      targets=[st.repro["path"]], timeout_s=self.test_timeout())
+        status = "confirmed" if run.status == "passed" else "not_confirmed"
+        self.log(f"Counterfactual {'CONFIRMED' if status == 'confirmed' else 'not confirmed'}: "
+                 f"HEAD minus {sha[:10]} -> pytest {run.status} ({run.duration_s}s).",
+                 "info" if status == "confirmed" else "warn")
+        return {"status": status, "pytest": run.status, "duration_s": run.duration_s, "partial": bool(skipped),
+                "skipped_files": skipped, "output_tail": run.output_tail[-1500:]}
 
     def _upstream_research(self, decision: dict, dep_changes: list[dict]) -> str:
         st = self.state
@@ -590,6 +654,9 @@ class Agent:
 
     # ------------------------------------------------------------ fix + verify
     def _fix(self) -> None:
+        """Self-correcting fix loop: Ultra proposes edits, the sandbox runs the reproduction test on the
+        patched HEAD, and failures are fed back until it passes (max 3 attempts). Only a fix that
+        passes the reproduction test goes on to the full-suite verification."""
         st = self.state
         self.check_time(120)
         self.phase("fix")
@@ -599,35 +666,85 @@ class Agent:
         base_user = (f"BUG REPORT:\n{st.input.bug_report}\n\nEXPLANATION:\n{st.explanation}\n\n"
                      f"REPRODUCTION TEST ({st.repro['path']}):\n```python\n{st.repro['code']}\n```\n\n"
                      f"CULPRIT DIFF:\n{self.repo.diff(sha, 30000)}\n\nHEAD FILES:\n{head_files}")
-        user = base_user
-        for attempt in range(1, 3):
-            res = self.router.call("propose_fix", prompts.PROPOSE_FIX, user, json_out=True)
-            patch = _normalise_patch((res.data or {}).get("diff", ""))
-            st.fix = {"diff": patch, "rationale": (res.data or {}).get("rationale", ""), "attempt": attempt}
-            self.emit("fix", diff=patch, rationale=st.fix["rationale"])
-            patched, err = self._apply_patch(patch)
-            if patched:
-                break
-            self.log(f"Proposed patch did not apply cleanly: {err[:200]}", "warn")
-            st.fix["apply_error"] = err
-            user = base_user + f"\n\nYOUR PREVIOUS DIFF FAILED `git apply`:\n{patch}\n\nERROR:\n{err}\nProduce a diff that applies."
-        else:
-            return
-        st.fix["applied"] = True
-        self._verify(patched)
+        feedback = ""
+        attempts: list[dict] = []
+        for attempt in range(1, 4):
+            self.check_time(60)
+            res = self.router.call("propose_fix", prompts.PROPOSE_FIX, base_user + feedback, json_out=True)
+            data = res.data or {}
+            patched, err, patch = self._apply_edits(data.get("edits") or [], f"patched-{attempt}")
+            st.fix = {"diff": patch, "rationale": data.get("rationale", ""), "attempt": attempt, "attempts": attempts}
+            if not patched:
+                self.log(f"Fix attempt {attempt}: edits did not apply ({err[:160]}).", "warn")
+                attempts.append({"attempt": attempt, "result": "did not apply", "detail": err[:300]})
+                feedback = f"\n\nYOUR PREVIOUS EDITS COULD NOT BE APPLIED:\n{err}\nCopy `find` snippets verbatim from the HEAD files."
+                continue
+            self.emit("fix", diff=patch, rationale=st.fix["rationale"], attempt=attempt)
+            key, ok = self._deps_key(patched)
+            run = self.sandbox.run_pytest(patched, st.bad_sha, key, inject={st.repro["path"]: st.repro["code"]},
+                                          targets=[st.repro["path"]], timeout_s=self.test_timeout()) if ok else None
+            if run and run.status == "passed":
+                attempts.append({"attempt": attempt, "result": "reproduction passes"})
+                self.log(f"Fix attempt {attempt}: reproduction test passes on HEAD + fix.")
+                st.fix["applied"] = True
+                self._verify(patched)
+                return
+            status = run.status if run else "install_failed"
+            attempts.append({"attempt": attempt, "result": f"reproduction {status}"})
+            self.log(f"Fix attempt {attempt}: reproduction test still {status}; feeding the failure back.", "warn")
+            feedback = (f"\n\nYOUR PREVIOUS FIX (attempt {attempt}):\n{patch}\n\nThe reproduction test still fails on "
+                        f"HEAD + that fix:\n{(run.output_tail if run else '')[-3000:]}\nWrite a corrected fix against "
+                        f"the ORIGINAL HEAD files (not on top of your previous attempt).")
+        st.fix["verdict"] = "No working fix found"
+        self.log("No fix made the reproduction test pass within 3 attempts.", "warn")
 
-    def _apply_patch(self, patch: str) -> tuple[Path | None, str]:
+    def _apply_edits(self, edits: list, name: str) -> tuple[Path | None, str, str]:
+        """Apply search/replace edits to a copy of the HEAD snapshot. Returns (dir, error, unified diff).
+        Pure file manipulation on the host; nothing from the repository executes."""
+        st = self.state
+        if not edits:
+            return None, "no edits", ""
+        base = self.sandbox.snapshot(self.repo.path, st.bad_sha, self.snap_key)
+        dest = self.s.data_dir / "jobs" / st.id / name
+        shutil.rmtree(dest, ignore_errors=True)
+        shutil.copytree(base, dest, symlinks=True)
+        originals: dict[str, str] = {}
+        for e in edits:
+            rel = os.path.normpath(str(e.get("path", ""))).lstrip("/")
+            target = (dest / rel).resolve()
+            if rel.startswith("..") or not target.is_relative_to(dest.resolve()) or not target.is_file():
+                return None, f"{rel}: not an existing file in the repository", ""
+            if rel == os.path.normpath(st.repro["path"]):
+                return None, "edits must not touch the reproduction test", ""
+            text = target.read_text(errors="replace")
+            originals.setdefault(rel, text)
+            find, replace = str(e.get("find", "")), str(e.get("replace", ""))
+            new = _replace_once(text, find, replace)
+            if new is None:
+                return None, f"{rel}: `find` snippet does not occur exactly once:\n{find[:400]}", ""
+            target.write_text(new)
+        diff = "".join(
+            "".join(difflib.unified_diff(old.splitlines(True), (dest / rel).read_text().splitlines(True),
+                                         f"a/{rel}", f"b/{rel}"))
+            for rel, old in originals.items())
+        if not diff.strip():
+            return None, "edits made no change", ""
+        return dest, "", diff
+
+    def _apply_patch(self, patch: str, name: str = "patched") -> tuple[Path | None, str]:
         st = self.state
         if not patch.strip():
             return None, "empty diff"
         base = self.sandbox.snapshot(self.repo.path, st.bad_sha, self.snap_key)
-        dest = self.s.data_dir / "jobs" / st.id / "patched"
+        dest = self.s.data_dir / "jobs" / st.id / name
         shutil.rmtree(dest, ignore_errors=True)
         shutil.copytree(base, dest, symlinks=True)
         # Applying a patch is pure file manipulation on the host; nothing from the repo executes.
         proc = subprocess.run(["git", "apply", "--recount", "--whitespace=nowarn", "-"], input=patch, text=True,
                               cwd=dest, capture_output=True,
-                              env={"PATH": os.environ.get("PATH", ""), "GIT_CONFIG_GLOBAL": "/dev/null", "HOME": "/tmp"})
+                              env={"PATH": os.environ.get("PATH", ""), "GIT_CONFIG_GLOBAL": "/dev/null", "HOME": "/tmp",
+                                   # never let git discover an enclosing repository around the data dir
+                                   "GIT_CEILING_DIRECTORIES": str(dest.parent)})
         if proc.returncode != 0:
             return None, proc.stderr[-800:]
         return dest, ""
@@ -673,6 +790,23 @@ class Agent:
         self.log(f"{verdict}: reproduction {'passes' if repro_passes else 'still fails'}, "
                  f"{len(new_failures)} new failures across {len(fixed.cases)} tests.")
         self.emit("verification", **st.fix["verification"], verdict=verdict)
+
+
+def _replace_once(text: str, find: str, replace: str) -> str | None:
+    """Replace a snippet that occurs exactly once; tolerate trailing-whitespace and
+    indentation-of-blank-line differences, which models commonly get wrong."""
+    if find and text.count(find) == 1:
+        return text.replace(find, replace, 1)
+    norm = lambda t: "\n".join(line.rstrip() for line in t.split("\n"))  # noqa: E731
+    lines, flines = text.split("\n"), norm(find).strip("\n").split("\n")
+    if not find.strip() or not flines:
+        return None
+    hits = [i for i in range(len(lines) - len(flines) + 1)
+            if [x.rstrip() for x in lines[i:i + len(flines)]] == flines]
+    if len(hits) != 1:
+        return None
+    i = hits[0]
+    return "\n".join(lines[:i] + replace.strip("\n").split("\n") + lines[i + len(flines):])
 
 
 def _normalise_patch(patch: str) -> str:
