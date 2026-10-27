@@ -17,8 +17,11 @@ inside a sandbox with NO network access. It must therefore:
 - Be deterministic, fast (well under 10 seconds), self-contained, and use only the standard library, pytest and the
   repository's own package (plus its existing runtime dependencies).
 - Not use network, subprocesses, sleeps, randomness without a seed, or skip/xfail markers.
-- Contain one to three focused test functions, all checking the same symptom. Use clear assert messages that state
-  the expected vs actual behaviour.
+- Contain THREE independent candidate test functions named test_repro_1, test_repro_2 and test_repro_3. Each checks
+  the reported symptom in a different way (a different entry point, input, or a looser vs. stricter assertion), so that
+  at least one is likely to fail at HEAD and pass at older commits. Assert only on the symptom itself, not on
+  incidental details (exact whitespace, ordering, unrelated output) that may differ between versions. Use clear assert
+  messages that state the expected vs actual behaviour. The agent keeps whichever candidates reproduce the bug.
 - Not rely on the repository's conftest fixtures (they change over history).
 
 The repository root and its `src/` directory are on PYTHONPATH; the package is NOT pip-installed, so avoid
@@ -33,8 +36,13 @@ You are shown the test, where it was run, what was required, and pytest's output
 satisfies all the original constraints (fail on HEAD via an assert that captures the reported bug; pass on the
 known-good commit; no network; only long-standing public APIs; no conftest fixtures).
 
-If the test errored at the known-good commit because an API did not exist yet, use an older, more basic API.
-If it passed at HEAD, your test did not capture the bug: re-read the report and the source and target the actual symptom.
+You get a per-candidate table of results at HEAD and at the known-good commit, both pytest outputs, and the history of
+all earlier attempts. Write THREE new candidates named test_repro_1..3 that learn from it:
+- A candidate that failed at the known-good commit too was asserting something that differs between versions for
+  unrelated reasons (formatting, extra output) or used an API that did not exist yet: assert only on the symptom,
+  and use the oldest, most basic API.
+- A candidate that passed at HEAD did not capture the bug: re-read the report and target the actual symptom.
+- Do not repeat an approach the history shows has already failed.
 
 Reply with JSON only: {"test_code": "...", "rationale": "...", "symptom": "..."}"""
 

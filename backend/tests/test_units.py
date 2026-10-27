@@ -79,3 +79,21 @@ def test_behavioural_file_classes():
         assert not _is_code(path), path
     assert [_counterfactual_status(x) for x in ("passed", "failed", "error", "timeout")] == \
         ["confirmed", "not_confirmed", "inconclusive", "inconclusive"]
+
+
+def test_candidate_selection_and_trimming():
+    from bisect_agent.agent import _candidate_table, _keep_tests
+    from bisect_agent.sandbox import TestCase, TestRun
+
+    def run(sha, cases):
+        return TestRun(sha=sha, status="failed", exit_code=1, duration_s=1, output_tail="",
+                       cases=[TestCase(f"tests.test_bisect_repro::{n}", o, m) for n, o, m in cases])
+
+    head = run("h", [("test_repro_1", "failed", "AssertionError: wrong"), ("test_repro_2", "failed", "assert 1 == 4"),
+                     ("test_repro_3", "failed", "ImportError: cannot import name 'x'")])
+    good = run("g", [("test_repro_1", "failed", "AssertionError: also wrong"), ("test_repro_2", "passed", ""),
+                     ("test_repro_3", "passed", "")])
+    table, winners = _candidate_table(head, good)
+    assert winners == ["test_repro_2"]  # 1 fails at known-good too; 3 is a broken test, not the symptom
+    code = "import x\n\n\n@mark\ndef test_repro_1():\n    pass\n\n\ndef test_repro_2():\n    pass\n"
+    assert _keep_tests(code, winners) == "import x\n\n\ndef test_repro_2():\n    pass\n"
