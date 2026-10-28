@@ -96,8 +96,8 @@ nvidia-nemotron, nebius-token-factory, tavily, python, fastapi, docker, git, pyt
   3. Offer a server-side thinking budget. One Ultra repair call produced 19k completion tokens in 66 s.
   4. Document streaming and client timeouts for long reasoning calls. One non-streamed Ultra call took 678 s, most
      likely two 300 s client timeouts on a stalled generation.
-  5. The 402 "credit balance exhausted" response is clear, but no warning comes before it; a low-balance header or
-     email would have let us top up before a demo batch died mid-run.
+  5. The 402 "credit balance exhausted" response is clear, but we didn't see any warning before it. A low-balance
+     response header would let a client warn before a long batch dies mid-run.
   6. Fix the JSON-mode docs: the prose and the schema disagree, and the Python example has syntax errors.
   7. Retire removed model IDs from the doc snippets, and say whether `api.studio.nebius.com` is an alias.
   8. Use consistent model-ID casing across the family.
