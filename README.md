@@ -20,7 +20,15 @@ All inference runs on **Nebius Token Factory** with **NVIDIA Nemotron 3** (Ultra
 Four real bugs from real projects, each with a public issue and a maintainer fix. Bisect was given only the bug
 report text and a known-good release. It wrote its own reproduction test.
 
-<<RESULTS_TABLE>>
+| Seed | Bug (as reported) | Culprit found | Steps / commits | Causal proof | Fix | Time | Model cost |
+|---|---|---|---|---|---|---|---|
+| [sqlparse #826](https://github.com/andialbrecht/sqlparse/issues/826) | `split()` stops splitting `BEGIN TRANSACTION … END TRANSACTION` scripts | ✅ [`1a3bfbd`](https://github.com/andialbrecht/sqlparse/commit/1a3bfbd50b82c05d9adcc51bacba059671dc1bc7) | 5 / 35 | ✅ (Ultra-resolved revert: a later commit re-wrapped the lines) | ✅ targeted fix; 480/480 suite tests pass | 1.8 min | $0.11 |
+| [pathspec #62](https://github.com/cpburnz/python-pathspec/issues/62) | gitignore `*` stops matching files in subdirectories | ✅ [`9eb2908`](https://github.com/cpburnz/python-pathspec/commit/9eb2908bbaecc354dbb62595cca2fd4c6219fd2d) | 5 / 42 | ✅ | ⚠️ fallback revert fixes the bug but re-breaks 2 of 81 tests (the issue the culprit fixed), and the report says so | 3.4 min | $0.17 |
+| [sql-metadata #597](https://github.com/macbre/sql-metadata/issues/597) | `CREATE TABLE IF NOT EXISTS foo` reports table `IF NOT EXISTS`, **a pure dependency bump** | ✅ [`fa8eb15`](https://github.com/macbre/sql-metadata/commit/fa8eb1533ce614ce133ddda2551bb6f7ffa131f1) | 6 / 36 | ✅ | ✅ revert of the lock bump; 160/160 suite tests pass. Tavily found the upstream change | 2.1 min | $0.17 |
+| [Python-Markdown #1358](https://github.com/Python-Markdown/markdown/issues/1358) | backslashes in raw HTML attributes get mangled | ✅ [`c0f6e5a`](https://github.com/Python-Markdown/markdown/commit/c0f6e5a31ea8e7fe98910a0523144c2a96fa9bf1) | 5 / 37 | ✅ | ✅ fallback revert, verified by the reproduction test (this suite needs the package pip-installed, so it can't run in the sandbox; Bisect detects and reports that) | 14.0 min | $0.22 |
+
+**4/4 culprits correct, 4/4 causally confirmed**, with 69 model calls, 0 errors and $0.67 of inference for all four
+hunts. Speculative prefetch had already tested the commit git asked for next on 13 of 21 bisect steps.
 
 Every run is stored with its full event stream: open it to see each commit tested, each verdict, and every model call
 with its tier, latency, tokens and cost. You can also replay it.
@@ -83,9 +91,24 @@ diffs, so Ultra's long context and reasoning pay for themselves. Nano handles th
 every bisect step gets a verdict and a diff summary, so Nano makes most of the calls, all on the critical path of the
 bisect loop.
 
-**Measured on the live runs** (<<N_CALLS>> calls, <<N_ERRORS>> errors):
+**Measured on the four verified runs** (69 calls, 0 errors):
 
-<<LATENCY_TABLE>>
+| Tier | Task | Calls | Median latency | Max | Median output tokens | of which thinking |
+|---|---|---|---|---|---|---|
+| Nano | `classify_verdict` | 21 | 0.9 s | 1.3 s | 35 | 0 |
+| Nano | `summarise_diff` | 21 | 1.1 s | 1.5 s | 53 | 0 |
+| Nano | `select_context_files` | 4 | 1.4 s | 1.6 s | 70 | 0 |
+| Nano | `plan_search_queries` | 1 | 2.1 s | 2.1 s | 179 | 0 |
+| Nano | `digest_search_results` | 1 | 5.0 s | 5.0 s | 465 | 0 |
+| Ultra | `decide_upstream_research` | 1 | 2.0 s | 2.0 s | 272 | 159 |
+| Ultra | `write_repro_test` | 4 | 6.4 s | 17.9 s | 1,836 | 1,177 |
+| Ultra | `resolve_revert` | 1 | 4.5 s | 4.5 s | 1,853 | 524 |
+| Ultra | `explain_culprit` | 4 | 14.9 s | 40.0 s | 4,643 | 4,203 |
+| Ultra | `repair_repro_test` | 1 | 14.9 s | 14.9 s | 4,774 | 4,095 |
+| Ultra | `propose_fix` | 10 | 17.4 s | 678 s* | 6,043 | 5,618 |
+
+\* One request stalled before the client streamed responses; see [FRICTION_LOG.md](FRICTION_LOG.md). The client now
+streams, detects a stall within 60 s, and bounds every call. Regenerate this table with `python scripts/seed_report.py`.
 
 **Guardrails around the cheap tier.** Hard evidence beats Nano's opinion: a pytest pass is always `good`; a timeout,
 collection error or failed install is always `skip`; an ImportError-style failure (the API didn't exist yet) is never
@@ -101,7 +124,11 @@ collection error or failed install is always `skip`; an ImportError-style failur
   into a single explanation call, with no chunking or retrieval layer.
 - **Thinking you can account for.** Token Factory reports `reasoning_tokens` and returns `reasoning_content` separately;
   Bisect records thinking tokens per call and shows them per tier.
-- **Cost:** a full hunt costs cents (see the results table). The routing table is why: <<SAVINGS_SENTENCE>>
+- **Cost and latency, measured honestly.** A full hunt costs $0.11–0.22. Routing cuts the bill by only ~12% against
+  the same tokens billed at Ultra prices, because Ultra's few long reasoning calls dominate spend (and that figure is a
+  lower bound, since Ultra with thinking on would emit more tokens for the same tasks). The bigger win is **latency on
+  the critical path**: Nano answers each per-step call in ~1 s, where Ultra with thinking takes 6–15 s. Across a
+  15-step bisect that is minutes of waiting removed per hunt.
 
 ## Other Nebius services
 
@@ -126,7 +153,9 @@ diff often can't explain the break. This is a real branch of the agent's logic:
 4. Nano extracts only the relevant facts, each with its source URL; Ultra folds them into the explanation with citations.
 
 The sql-metadata seed shows this end to end: the culprit is `Bump sqlparse from 0.5.3 to 0.5.4`, which changed only
-`poetry.lock`, and the explanation cites the sqlparse changelog and advisory behind the change.
+`poetry.lock`. Ultra decided upstream research was needed, Tavily ran 5 searches, and the explanation cites the upstream
+issues and security advisory it found. Citations are checked against the URLs Tavily actually returned; anything the
+model invents is dropped and recorded.
 
 ## The sandbox
 
