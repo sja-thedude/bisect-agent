@@ -36,6 +36,7 @@ class Completion:
     latency_s: float
     model: str
     reasoning_tokens: int = 0
+    request_id: str = ""
 
 
 _THINK = re.compile(r"<think>(.*?)</think>", re.S)
@@ -101,9 +102,16 @@ class TokenFactory:
                                          headers={"Authorization": f"Bearer {self.api_key}"},
                                          timeout=httpx.Timeout(connect=15, read=STALL_S, write=30, pool=30)) as r:
                     if r.status_code == 200:
-                        return self._read(r, model, t0, deadline_s)
+                        comp = self._read(r, model, t0, deadline_s)
+                        comp.request_id = r.headers.get("x-request-id", "")
+                        return comp
                     r.read()
-                    last = f"HTTP {r.status_code}: {r.text[:500]}"
+                    last = f"HTTP {r.status_code}: {r.text[:500]} (x-request-id {r.headers.get('x-request-id', '?')})"
+                    if r.status_code == 402:
+                        raise InferenceError("Nebius Token Factory credit balance is exhausted (HTTP 402); add funds "
+                                             "or credits to the account that owns NEBIUS_API_KEY")
+                    if r.status_code in (401, 403):
+                        raise InferenceError(f"Nebius Token Factory rejected the API key (HTTP {r.status_code})")
                     if r.status_code == 429:
                         delay = float(r.headers.get("retry-after", delay))
                     elif r.status_code < 500:
