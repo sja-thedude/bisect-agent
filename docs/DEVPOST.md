@@ -53,12 +53,17 @@ tokens and cost, and a final report you can copy as a GitHub issue.
 - Python + FastAPI + SQLite + Docker on the backend, Next.js 15 + Tailwind v4 on the frontend, SSE for the live stream.
 
 ## Verified on real regressions
-| Repo | Bug | Found | Causal proof | Fix |
-|---|---|---|---|---|
-| sqlparse #826 | `split()` stops splitting `BEGIN TRANSACTION` | ✅ in 5 steps | ✅ | ✅ 0 new failures / 483 tests |
-| pathspec #62 | `*` stops matching files in subdirectories | ✅ | ✅ | <fill in> |
-| sql-metadata #597 | `CREATE TABLE IF NOT EXISTS` reports table "IF NOT EXISTS" (dependency bump) | ✅ | ✅ | ✅ |
-| Python-Markdown #1358 | backslashes in raw HTML attributes mangled | ✅ | ✅ | <fill in> |
+Given only the bug report text and a known-good release, Bisect found the correct culprit in all four cases, each one
+matching the maintainers' own fix history, and causally confirmed all four by reverting the culprit on HEAD.
+
+| Repo | Bug | Culprit | Steps | Causal proof | Fix |
+|---|---|---|---|---|---|
+| sqlparse #826 | `split()` stops splitting `BEGIN TRANSACTION` | ✅ `1a3bfbd` | 5 of 35 commits | ✅ | ✅ targeted fix, 480/480 suite tests |
+| pathspec #62 | `*` stops matching files in subdirectories | ✅ `9eb2908` | 5 of 42 | ✅ | ⚠️ revert re-breaks 2 tests (reported) |
+| sql-metadata #597 | `CREATE TABLE IF NOT EXISTS` reports table "IF NOT EXISTS" (pure dependency bump) | ✅ `fa8eb15` | 6 of 36 | ✅ | ✅ 160/160 suite tests; Tavily found the upstream change |
+| Python-Markdown #1358 | backslashes in raw HTML attributes mangled | ✅ `c0f6e5a` | 5 of 37 | ✅ | ✅ verified by the reproduction test |
+
+69 model calls, 0 errors, $0.67 of inference for all four hunts (1.8–14 minutes each).
 
 ## Challenges
 - **Code moves after the culprit.** On sqlparse, a later "Code cleanup" commit re-wrapped the culprit's lines. That broke
@@ -82,16 +87,20 @@ nvidia-nemotron, nebius-token-factory, tavily, python, fastapi, docker, git, pyt
 # Feedback forms
 
 ## Nebius Token Factory
-- **What worked:** exact catalog IDs worked first time; `/v1/models` made a preflight check trivial; zero errors and zero
-  429s across 100+ calls; JSON mode was reliable on Nemotron; `reasoning_tokens` and `reasoning_content` are
-  well-formed.
+- **What worked:** exact catalog IDs worked first time; `/v1/models` made a preflight check trivial; hundreds of calls
+  with no errors and no 429s; JSON mode was reliable on Nemotron; `reasoning_tokens`, `reasoning_content`,
+  `x-request-id` and the dynamic rate-limit headers are all there.
 - **What to improve:**
   1. Document `chat_template_kwargs` (the Nemotron thinking toggle). I found it only in NVIDIA's HF cards.
   2. Document that reasoning comes back in `reasoning_content` and is counted in `completion_tokens_details`.
   3. Offer a server-side thinking budget. One Ultra repair call produced 19k completion tokens in 66 s.
-  4. Fix the JSON-mode docs: the prose and the schema disagree, and the Python example has syntax errors.
-  5. Retire removed model IDs from the doc snippets, and say whether `api.studio.nebius.com` is an alias.
-  6. Use consistent model-ID casing across the family.
+  4. Document streaming and client timeouts for long reasoning calls. One non-streamed Ultra call took 678 s, most
+     likely two 300 s client timeouts on a stalled generation.
+  5. The 402 "credit balance exhausted" response is clear, but no warning comes before it; a low-balance header or
+     email would have let us top up before a demo batch died mid-run.
+  6. Fix the JSON-mode docs: the prose and the schema disagree, and the Python example has syntax errors.
+  7. Retire removed model IDs from the doc snippets, and say whether `api.studio.nebius.com` is an alias.
+  8. Use consistent model-ID casing across the family.
 
 ## Nebius AI Cloud
 <fill in after deploying the demo VM: what was smooth, what wasn't>
@@ -101,8 +110,9 @@ nvidia-nemotron, nebius-token-factory, tavily, python, fastapi, docker, git, pyt
 - Nano with thinking off was consistently ~1 s for classification, fast enough to sit inside the bisect loop.
 - Nano sometimes misread a *passing* pytest run as matching the reference failure when the prompt led with the failure
   output. Leading with the pass/fail result fixed it, and hard-evidence guardrails stay in place regardless.
-- Ultra occasionally copied edit snippets from an older diff rather than the current file. Worth knowing for agentic
-  code-editing prompts.
+- Ultra occasionally copied edit snippets from an older diff rather than the current file, and sometimes assembled
+  plausible but non-existent URLs (e.g. a dbt issue number on the sqlparse repo). We verify edits against the file and
+  citations against the retrieved search results.
 
 ## Tavily
 - `include_domains` scoping (NVD/OSV/GitHub for CVEs, GitHub for issues) noticeably improved relevance.
