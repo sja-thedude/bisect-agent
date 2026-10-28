@@ -357,7 +357,7 @@ function ReportCard({ st }: { st: RunState }) {
               {!!research.findings?.length && (
                 <ul className="mt-2 space-y-1.5">
                   {research.findings.map((f, i) => (
-                    <li key={i} className="text-[12px] leading-snug text-ink/80">{f.fact} <a href={f.url} target="_blank" rel="noreferrer" className="break-all text-[#c4b5fd] hover:underline">[source]</a></li>
+                    <li key={i} className="text-[12px] leading-snug text-ink/80">{f.fact}{f.url ? <> <a href={f.url} target="_blank" rel="noreferrer" className="break-all text-[#c4b5fd] hover:underline">[source]</a></> : <span className="text-muted"> [unsourced]</span>}</li>
                   ))}
                 </ul>
               )}
@@ -375,6 +375,11 @@ function ReportCard({ st }: { st: RunState }) {
               <h4 className="mb-1.5 text-[11px] font-semibold uppercase tracking-widest text-muted">Citations</h4>
               <ul className="space-y-0.5 text-[12px]">{ex.citations.map((c) => <li key={c}><a href={c} target="_blank" rel="noreferrer" className="break-all text-fast hover:underline">{c}</a></li>)}</ul>
             </div>
+          )}
+          {!!ex.dropped_citations?.length && (
+            <p className="text-[11.5px] text-muted" title={ex.dropped_citations.join("\n")}>
+              {ex.dropped_citations.length} citation{ex.dropped_citations.length > 1 ? "s" : ""} the model gave that no search result contained {ex.dropped_citations.length > 1 ? "were" : "was"} dropped.
+            </p>
           )}
           {!!st.candidates.length && !fb.sha && (
             <div>
