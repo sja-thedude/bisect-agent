@@ -30,3 +30,43 @@ Newest entries at the bottom. Each entry: date, tool, what happened, what I expe
 
 - `git bisect start -- <pathspec>` rejects a pathspec made only of `:(exclude)` entries ("No testable commit found")
   even though `git rev-list` accepts the same pathspec. Adding an explicit `:(top)` include fixes it.
+
+## 2026-10-27/28 — first live runs on Token Factory (106 calls, 0 errors)
+
+- **The good:** both exact catalog IDs worked first time, `GET /v1/models` listed every Nemotron variant (handy for a
+  preflight check), and across 106 calls in two tiers there were zero errors, zero 429s and no retries needed.
+  Nano with thinking off answered classification calls in ~1.0 s median (max 1.4 s), which is what makes a model
+  in the bisect loop affordable.
+- **`chat_template_kwargs` just works** at the top level of the JSON body (as the vLLM pass-through implies), but
+  nothing in the Token Factory docs says so; I only knew to try it from NVIDIA's model cards.
+- **Ultra's thinking tokens dominate cost and latency, and there is no server-side budget.** A repair call produced
+  19,287 completion tokens and took 65.7 s; median `propose_fix` output was ~6k tokens. NVIDIA's `reasoning_budget` is a
+  client-side recipe, and it's unclear whether Token Factory's `reasoning_effort` maps to Nemotron's thinking at all.
+  A documented `max_thinking_tokens` (or confirmation that `reasoning_effort` controls it) would help a lot.
+- **Reasoning is reported well:** `usage.completion_tokens_details.reasoning_tokens` is populated (e.g. 344 of 347
+  completion tokens on a short Ultra call) and the thinking comes back in `message.reasoning_content`, not inline
+  `<think>` tags. Neither is mentioned in the Token Factory docs, which left me writing defensive parsing for both
+  formats; one sentence in the docs would have saved that.
+- **JSON mode was reliable on both tiers:** with `response_format: json_object` every response parsed; my one-shot
+  "repair the JSON" turn never fired. Worth stating in the docs, since the catalog doesn't tag Nemotron as JSON-capable.
+- **Model behaviour worth knowing (not a platform bug):** when asked for search/replace edits, Ultra sometimes copies
+  the snippet from an older diff in the prompt rather than the current file. I added a whitespace/comment-insensitive
+  locator and feed the real lines back on a miss.
+
+## 2026-10-28 — Tavily
+
+- `include_domains` scoping worked well: restricting CVE queries to nvd.nist.gov / osv.dev / github.com and issue
+  queries to github.com gave noticeably more relevant hits. Advanced-depth searches took ~5 s each.
+- `include_answer` returned a useful one-paragraph synthesis, but there is no way to ask for citations inside it, so I
+  digest the raw results with Nemotron Nano to keep a URL attached to every fact.
+
+## 2026-10-28 — a stalled Ultra request
+
+- One non-streamed `propose_fix` call to Ultra took **678 s** end to end for 16.7k output tokens, while comparable calls
+  ran at ~300 tokens/s (e.g. 4.1k tokens in 13 s). Most likely two 300 s client read timeouts before a retry succeeded.
+  I can't tell from the client whether the server or the network stalled. Responses do carry `x-request-id` and
+  `x-inference-id` headers, but my client wasn't logging them, so I had nothing to report; it records them on every
+  call now. Switching to streaming (`stream: true` + `stream_options.include_usage`) let me detect stalls within 60 s
+  and bound each call, and streamed usage still includes `reasoning_tokens`. Suggestion: document recommended client
+  timeouts and streaming for long reasoning generations, and mention the request-ID headers for support tickets.
+  The rate-limit headers (`x-ratelimit-*`, including the dynamic-scale ones) are a nice touch.
