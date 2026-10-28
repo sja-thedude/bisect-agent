@@ -87,6 +87,7 @@ class CallRecord:
     context: str = ""  # e.g. the commit sha this call was about
     cost_usd: float = 0.0
     reasoning_tokens: int = 0  # part of completion_tokens spent thinking
+    request_id: str = ""       # Token Factory x-request-id, for support tickets
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -160,6 +161,7 @@ class Router:
         )
         rec.cost_usd = round(cost_usd(tier, rec.prompt_tokens, rec.completion_tokens), 6)
         rec.reasoning_tokens = comp.reasoning_tokens if comp else 0
+        rec.request_id = comp.request_id if comp else ""
         with self._lock:
             self.calls.append(rec)
         for fn in self._listeners:
