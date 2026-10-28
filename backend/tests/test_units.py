@@ -110,3 +110,19 @@ def test_token_factory_errors_are_explained():
     tf = TokenFactory(api_key="k", transport=httpx.MockTransport(handler))
     with _pytest.raises(InferenceError, match="credit balance is exhausted"):
         tf.chat("m", [{"role": "user", "content": "hi"}], retries=0)
+
+
+def test_citations_must_come_from_search_results():
+    from bisect_agent.agent import Agent, JobInput, JobState
+    st = JobState(id="c", input=JobInput(repo_url="x", bug_report="y"), repo_url="https://github.com/o/r")
+    st.research = {"searches": [{"hits": [{"url": "https://osv.dev/vulnerability/X-1"}]}],
+                   "findings": [{"fact": "a", "url": "https://osv.dev/vulnerability/X-1/"},
+                                {"fact": "b", "url": "https://github.com/o/up/issues/99999"}]}
+    st.explanation = {"citations": ["https://osv.dev/vulnerability/X-1", "https://github.com/o/r/commit/abc",
+                                    "https://github.com/made/up/issues/1"]}
+    agent = Agent.__new__(Agent)
+    agent.state, agent._emit = st, lambda k, p: None
+    agent._verify_citations()
+    assert st.explanation["citations"] == ["https://osv.dev/vulnerability/X-1", "https://github.com/o/r/commit/abc"]
+    assert st.explanation["dropped_citations"] == ["https://github.com/made/up/issues/1", "https://github.com/o/up/issues/99999"]
+    assert st.research["findings"][1]["url"] == ""
