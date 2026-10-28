@@ -581,7 +581,27 @@ class Agent:
                 f"{cf_text}\n\n{findings_text}\n\nDIFF OF FIRST BAD COMMIT:\n{diff}")
         res = self.router.call("explain_culprit", prompts.EXPLAIN_CULPRIT, user, json_out=True, context=sha)
         st.explanation = res.data or {}
+        self._verify_citations()
         self.emit("explanation", **st.explanation)
+
+    def _verify_citations(self) -> None:
+        """Models invent plausible URLs. Keep only citations that Tavily actually returned or that
+        point at this repository's own commits; record what was dropped so the report can say so."""
+        st = self.state
+        allowed = {_norm_url(h["url"]) for s in st.research.get("searches", []) for h in s.get("hits", [])}
+        repo_prefix = _norm_url(st.repo_url) + "/commit/"
+        ok = lambda u: _norm_url(u) in allowed or _norm_url(u).startswith(repo_prefix)  # noqa: E731
+        cites = [u for u in st.explanation.get("citations") or [] if isinstance(u, str)]
+        dropped = [u for u in cites if not ok(u)]
+        st.explanation["citations"] = [u for u in cites if ok(u)]
+        for f in st.research.get("findings", []):
+            if f.get("url") and not ok(f["url"]):
+                dropped.append(f["url"])
+                f["url"] = ""
+        if dropped:
+            st.explanation["dropped_citations"] = sorted(set(dropped))
+            self.log(f"Dropped {len(set(dropped))} citation(s) that no search result contained: "
+                     f"{', '.join(sorted(set(dropped)))}", "warn")
 
     def _counterfactual(self) -> dict:
         """Causal proof: revert ONLY the culprit on top of HEAD and rerun the reproduction test.
@@ -917,6 +937,10 @@ def _is_code(path: str) -> bool:
 
 
 _TOKEN = re.compile(r"[^\s#]+")
+
+
+def _norm_url(url: str) -> str:
+    return url.split("#", 1)[0].rstrip("/").removeprefix("http://").removeprefix("https://").removeprefix("www.").lower()
 
 
 def _case_name(nodeid: str) -> str:
