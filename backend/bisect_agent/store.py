@@ -41,8 +41,12 @@ class Store:
         self._seq: dict[str, int] = {}
 
     def create_run(self, state: dict, seed: bool = False, title: str = "") -> None:
+        """Create (or restart) a run. Restarting an id clears its old events, so a stream never
+        mixes several attempts (seeds are re-run under fixed ids)."""
         inp = state["input"]
         with self._lock:
+            self._db.execute("DELETE FROM events WHERE run_id=?", (state["id"],))
+            self._seq.pop(state["id"], None)
             self._db.execute(
                 "INSERT OR REPLACE INTO runs (id, created_at, finished_at, repo_url, bug_report, phase, outcome, seed, title, state)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?)",

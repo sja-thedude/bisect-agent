@@ -129,6 +129,12 @@ async def run_events(run_id: str, request: Request, after: int = 0, replay_speed
     if not store.has(run_id):
         raise HTTPException(404, "run not found")
 
+    # EventSource reconnects send Last-Event-ID; resume there instead of replaying from the start.
+    try:
+        after = max(after, int(request.headers.get("last-event-id", "0") or 0))
+    except ValueError:
+        pass
+
     async def gen():
         last = after
         prev_ts = None
