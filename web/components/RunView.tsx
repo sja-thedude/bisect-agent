@@ -441,7 +441,12 @@ function Stat({ label, value, tone }: { label: string; value: string; tone: "goo
 }
 
 export function RunView({ id, onBack }: { id: string; onBack: () => void }) {
-  const [speed, setSpeed] = useState(0);
+  // `?replay=<speed>` opens a finished run already replaying (handy for demos and shared links).
+  const [speed, setSpeed] = useState(() => {
+    if (typeof window === "undefined") return 0;
+    const v = Number(new URLSearchParams(window.location.search).get("replay"));
+    return Number.isFinite(v) && v > 0 ? Math.min(v, 100) : 0;
+  });
   const [nonce, setNonce] = useState(0);
   const { events, state: st, error, streaming } = useRun(id, speed, nonce);
   const [copied, setCopied] = useState(false);
