@@ -114,6 +114,8 @@ class Store:
         state.pop("title", None)
         self.create_run(state, seed=True, title=title or state.get("title", ""))
         self.save_state(state)
+        with self._lock:
+            self._db.execute("DELETE FROM events WHERE run_id=?", (state["id"],))  # no leftovers from an older run
         for ev in data["events"]:
             with self._lock:
                 self._db.execute("INSERT OR REPLACE INTO events (run_id, seq, ts, kind, payload) VALUES (?,?,?,?,?)",

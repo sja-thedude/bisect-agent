@@ -49,9 +49,13 @@ class RunRequest(BaseModel):
 def load_seeds() -> None:
     if not SEEDS_DIR.exists():
         return
+    # The verified files are the source of truth: a CLI run that reused a seed id (or an older
+    # import) must never shadow them, so re-import whenever the stored copy differs.
     for f in sorted(SEEDS_DIR.glob("*.json")):
         data = json.loads(f.read_text())
-        if not store.has(data["state"]["id"]):
+        stored = store.get(data["state"]["id"])
+        if not stored or stored.get("finished_at") != data["state"].get("finished_at") \
+                or len(store.events(data["state"]["id"])) != len(data["events"]):
             store.import_run(data, title=data.get("title", ""))
 
 

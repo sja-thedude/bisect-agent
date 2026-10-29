@@ -126,3 +126,18 @@ def test_citations_must_come_from_search_results():
     assert st.explanation["citations"] == ["https://osv.dev/vulnerability/X-1", "https://github.com/o/r/commit/abc"]
     assert st.explanation["dropped_citations"] == ["https://github.com/made/up/issues/1", "https://github.com/o/up/issues/99999"]
     assert st.research["findings"][1]["url"] == ""
+
+
+def test_seed_import_replaces_a_stale_run(tmp_path):
+    from bisect_agent.store import Store
+    store = Store(tmp_path / "db.sqlite3")
+    stale = {"id": "seed-x", "created_at": 1.0, "finished_at": 2.0, "phase": "done", "outcome": "failed",
+             "input": {"repo_url": "u", "bug_report": "b"}}
+    store.create_run(stale)
+    for i in range(5):
+        store.add_event("seed-x", "log", {"message": f"stale {i}"})
+    good = {"state": {**stale, "finished_at": 3.0, "outcome": "found"},
+            "events": [{"seq": 1, "ts": 1.0, "kind": "log", "payload": {"message": "verified"}}]}
+    store.import_run(good)
+    assert store.get("seed-x")["outcome"] == "found"
+    assert [e["payload"]["message"] for e in store.events("seed-x")] == ["verified"]
