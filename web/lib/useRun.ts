@@ -52,9 +52,12 @@ export function useRun(id: string | null, speed: number, nonce: number) {
     const es = new EventSource(`${API}/api/runs/${id}/events?replay_speed=${speed}`);
     setStreaming(true);
     const batch: RunEvent[] = [];
+    const seen = new Set<number>();
     let flush: ReturnType<typeof setTimeout> | null = null;
     const onAny = (e: MessageEvent) => {
       const ev: RunEvent = JSON.parse(e.data);
+      if (seen.has(ev.seq)) return; // a reconnect must never duplicate the log
+      seen.add(ev.seq);
       batch.push(ev);
       if (!flush) flush = setTimeout(() => { setEvents((prev) => prev.concat(batch.splice(0))); flush = null; }, 60);
       if (REFRESH_KINDS.has(ev.kind) && speed === 0) refresh();

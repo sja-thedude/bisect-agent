@@ -141,3 +141,14 @@ def test_seed_import_replaces_a_stale_run(tmp_path):
     store.import_run(good)
     assert store.get("seed-x")["outcome"] == "found"
     assert [e["payload"]["message"] for e in store.events("seed-x")] == ["verified"]
+
+
+def test_restarting_a_run_id_clears_its_old_events(tmp_path):
+    from bisect_agent.store import Store
+    store = Store(tmp_path / "db.sqlite3")
+    st = {"id": "r", "created_at": 1.0, "phase": "clone", "input": {"repo_url": "u", "bug_report": "b"}}
+    store.create_run(st)
+    store.add_event("r", "log", {"message": "first attempt"})
+    store.create_run(st)
+    store.add_event("r", "log", {"message": "second attempt"})
+    assert [(e["seq"], e["payload"]["message"]) for e in store.events("r")] == [(1, "second attempt")]
