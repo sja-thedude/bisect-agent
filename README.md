@@ -9,9 +9,10 @@ All inference runs on **Nebius Token Factory** with **NVIDIA Nemotron 3** (Ultra
 
 | | |
 |---|---|
-| **Live demo** | <<DEMO_URL>> |
+| **Demo (verified runs, replayable)** | **https://bisect-agent.pages.dev** — opens the four verified runs instantly; replay any of them |
 | **Demo video** | <<VIDEO_URL>> |
-| **Verified runs** (open instantly) | `/?run=seed-sqlparse-826` · `/?run=seed-pathspec-62` · `/?run=seed-sqlmetadata-597` · `/?run=seed-markdown-1358` |
+| **Direct links** | [sqlparse](https://bisect-agent.pages.dev/?run=seed-sqlparse-826) · [pathspec](https://bisect-agent.pages.dev/?run=seed-pathspec-62) · [sql-metadata (dependency bump + Tavily)](https://bisect-agent.pages.dev/?run=seed-sqlmetadata-597) · [Python-Markdown](https://bisect-agent.pages.dev/?run=seed-markdown-1358) |
+| **Run your own hunt** | the hosted demo replays recorded runs; live runs need Docker, so run the full app locally (see [Running it](#running-it)) |
 
 ---
 
