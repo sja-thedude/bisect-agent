@@ -10,7 +10,7 @@ and a verified fix, with NVIDIA Nemotron on Nebius Token Factory.
 **Links:**
 - Demo: https://bisect-agent.pages.dev
 - Code: https://github.com/sja-thedude/bisect-agent (MIT)
-- Video: <YOUTUBE URL>
+- Video: https://youtu.be/tmnFS8Vgka0
 
 ---
 
