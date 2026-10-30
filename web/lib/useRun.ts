@@ -33,7 +33,7 @@ export function useRun(id: string | null, speed: number, nonce: number) {
     if (STATIC) {
       // No server: fetch the recorded run and replay its events locally (instantly or paced).
       const timers: ReturnType<typeof setTimeout>[] = [];
-      fetch(`/demo/runs/${id}.json`).then((r) => r.json()).then((data: { state: RunState; events: RunEvent[] }) => {
+      fetch(`/demo/runs/${id}.json`).then((r) => { if (!r.ok) throw new Error(r.status === 404 ? "run not found" : `HTTP ${r.status}`); return r.json(); }).then((data: { state: RunState; events: RunEvent[] }) => {
         if (closed) return;
         if (speed === 0) { setEvents(data.events); setState({ ...data.state, seed: true }); setStreaming(false); return; }
         setStreaming(true);
